@@ -23,18 +23,18 @@ mod common;
 /// gets support for them
 #[cfg(test)]
 mod unsupported {
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{
+        register_alltypes, remote_context, remote_push_context, standalone_context,
+        standalone_push_context,
+    };
     use datafusion::prelude::SessionContext;
     use rstest::*;
-
-    #[rstest::fixture]
-    fn test_data() -> String {
-        crate::common::example_test_data()
-    }
 
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     #[should_panic]
     async fn should_support_sql_create_table(
@@ -62,19 +62,15 @@ mod unsupported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_support_information_schema_query_reading_other_tables(
         #[future(awt)]
         #[case]
         ctx: SessionContext,
-        test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
+        register_alltypes(&ctx, "test").await;
 
         // information_schema can only be read on the client, and `test` should
         // be scanned by the cluster, so the query is refused rather than run

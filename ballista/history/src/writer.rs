@@ -33,6 +33,8 @@
 use crate::event::HistoryEvent;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot};
 
@@ -138,6 +140,45 @@ impl EventLogWriter {
             log::warn!(
                 "event-log writer: failed to enqueue finish for {job_id} (channel closed)"
             );
+        }
+    }
+}
+
+/// Check that event logs can be written under `log_dir`: create it if it is
+/// missing, then create and remove a file in it.
+///
+/// [`EventLogWriter`] only logs a warning when it cannot write, so a caller
+/// that needs the logs should check the directory before starting the writer.
+pub async fn check_log_dir(log_dir: &Path) -> std::io::Result<()> {
+    static PROBES: AtomicU64 = AtomicU64::new(0);
+
+    tokio::fs::create_dir_all(log_dir).await?;
+    // Several schedulers can share the directory, and in containers they all
+    // run as pid 1, so the pid alone does not make the name unique. The time
+    // and a counter do, and `create_new` makes sure each check only ever
+    // removes the file it created itself.
+    loop {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let probe = log_dir.join(format!(
+            ".write-check-{}-{nanos}-{}",
+            std::process::id(),
+            PROBES.fetch_add(1, Ordering::Relaxed)
+        ));
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .await
+        {
+            Ok(file) => {
+                drop(file);
+                return tokio::fs::remove_file(&probe).await;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
         }
     }
 }
@@ -257,38 +298,14 @@ async fn open_for<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{
-        HistoryEvent, JobEnd, JobEndStatus, JobIndex, JobStart, StageStart, TaskEnd,
-        TaskEndMetrics,
-    };
+    use crate::event::{HistoryEvent, StageStart, TaskEnd, TaskEndMetrics};
+    use crate::test_util::{job_end, job_start};
     use ballista_api_types::dto::TaskStatus;
-    use serde_json::value::RawValue;
-    use std::collections::BTreeMap;
 
-    /// A minimal succeeded `JobEnd` for `job_id`; the payloads are placeholders,
-    /// only the record's presence and the file lifecycle matter to these tests.
+    /// A succeeded `JobEnd` for `job_id`; the payloads are placeholders, only
+    /// the record's presence and the file lifecycle matter to these tests.
     fn succeeded_job_end(job_id: &str) -> HistoryEvent {
-        HistoryEvent::JobEnd(Box::new(JobEnd {
-            status: JobEndStatus::Succeeded,
-            queued_at: 1,
-            started_at: 2,
-            completed_at: 20,
-            index: JobIndex {
-                job_id: job_id.into(),
-                job_name: "q1".into(),
-                status: "Completed".into(),
-                job_status: "COMPLETED".into(),
-                start_time: 10,
-                end_time: 20,
-                num_stages: 1,
-                completed_stages: 1,
-                percent_complete: 100,
-            },
-            job: RawValue::from_string(format!(r#"{{"job_id":"{job_id}"}}"#)).unwrap(),
-            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
-            config: BTreeMap::new(),
-            dot: "digraph {}".into(),
-        }))
+        HistoryEvent::JobEnd(Box::new(job_end(job_id)))
     }
 
     #[tokio::test]
@@ -298,18 +315,7 @@ mod tests {
         // under load; `append_final` must still guarantee delivery.
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 1);
 
-        writer.append(
-            "job-1",
-            HistoryEvent::JobStart(JobStart {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                queued_at: 1,
-                submitted_at: 2,
-                scheduler_id: None,
-                logical_plan: None,
-                physical_plan: None,
-            }),
-        );
+        writer.append("job-1", HistoryEvent::JobStart(job_start("job-1")));
         for stage_id in 0..10 {
             writer.append(
                 "job-1",
@@ -320,27 +326,7 @@ mod tests {
             );
         }
 
-        let job_end = HistoryEvent::JobEnd(Box::new(JobEnd {
-            status: JobEndStatus::Succeeded,
-            queued_at: 1,
-            started_at: 2,
-            completed_at: 20,
-            index: JobIndex {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                status: "Completed".into(),
-                job_status: "COMPLETED".into(),
-                start_time: 10,
-                end_time: 20,
-                num_stages: 1,
-                completed_stages: 1,
-                percent_complete: 100,
-            },
-            job: RawValue::from_string(r#"{"job_id":"job-1"}"#.to_string()).unwrap(),
-            stages: RawValue::from_string(r#"{"stages":[]}"#.to_string()).unwrap(),
-            config: BTreeMap::new(),
-            dot: "digraph {}".into(),
-        }));
+        let job_end = succeeded_job_end("job-1");
         writer.append_final("job-1", job_end).await;
         writer.finish_job("job-1").await;
 
@@ -364,18 +350,7 @@ mod tests {
     async fn append_writes_one_jsonl_line_per_event() {
         let dir = tempfile::tempdir().unwrap();
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
-        writer.append(
-            "job-1",
-            HistoryEvent::JobStart(JobStart {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                queued_at: 1,
-                submitted_at: 2,
-                scheduler_id: None,
-                logical_plan: None,
-                physical_plan: None,
-            }),
-        );
+        writer.append("job-1", HistoryEvent::JobStart(job_start("job-1")));
         writer.append(
             "job-1",
             HistoryEvent::StageStart(StageStart {
@@ -410,18 +385,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let writer = EventLogWriter::new(dir.path().to_path_buf(), 16);
 
-        writer.append(
-            "job-1",
-            HistoryEvent::JobStart(JobStart {
-                job_id: "job-1".into(),
-                job_name: "q1".into(),
-                queued_at: 1,
-                submitted_at: 2,
-                scheduler_id: None,
-                logical_plan: None,
-                physical_plan: None,
-            }),
-        );
+        writer.append("job-1", HistoryEvent::JobStart(job_start("job-1")));
         writer
             .append_final("job-1", succeeded_job_end("job-1"))
             .await;
@@ -463,5 +427,45 @@ mod tests {
             finalized,
             "the finalized .eventlog must be left untouched"
         );
+    }
+
+    #[tokio::test]
+    async fn check_log_dir_creates_the_dir_and_leaves_it_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_dir = dir.path().join("a").join("logs");
+
+        check_log_dir(&log_dir).await.unwrap();
+
+        assert!(log_dir.is_dir());
+        assert_eq!(std::fs::read_dir(&log_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_log_dir_runs_concurrently_on_one_dir() {
+        // Like several schedulers with the same pid starting against one
+        // shared directory: no check may remove another one's probe.
+        let dir = tempfile::tempdir().unwrap();
+        let log_dir = dir.path().join("logs");
+
+        let checks: Vec<_> = (0..16)
+            .map(|_| {
+                let log_dir = log_dir.clone();
+                tokio::spawn(async move { check_log_dir(&log_dir).await })
+            })
+            .collect();
+        for check in checks {
+            check.await.unwrap().unwrap();
+        }
+
+        assert_eq!(std::fs::read_dir(&log_dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn check_log_dir_fails_when_the_dir_cannot_be_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+
+        assert!(check_log_dir(&file.join("logs")).await.is_err());
     }
 }

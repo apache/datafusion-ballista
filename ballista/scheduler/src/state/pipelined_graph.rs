@@ -49,7 +49,8 @@ use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     PipelinedShuffleReaderExec, PipelinedShuffleWriterExec, ShuffleWriter,
-    UnresolvedShuffleExec, compute_global_output_partition_ids,
+    SortShuffleWriterExec, UnresolvedShuffleExec, compute_global_output_partition_ids,
+    sort_shuffle::ShuffleRouting,
 };
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -58,23 +59,25 @@ use ballista_core::serde::protobuf::{
     task_status,
 };
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PipelinedPartitionLocation, TaskKey,
+    ExecutorEndpoint, ExecutorMetadata, PartitionId, PartitionLocation,
+    PipelinedPartitionLocation, TaskKey,
 };
 use datafusion::physical_plan::{ExecutionPlan, replace_children_if_necessary};
 use datafusion::prelude::SessionConfig;
 use log::{info, warn};
 
-use crate::cache::CACHE_DATA_LOST;
+use crate::cache::{CACHE_DATA_LOST, is_external_stage_id};
 use crate::cluster::{BoundTask, ExecutorSlot, stage_has_input_collapse};
 use crate::planner::{DistributedPlanner, find_unresolved_shuffles};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionGraphBox, ExecutionStage, ExecutionStageBuilder,
-    RunningTaskInfo, TaskDescription, create_task_info,
+    RunningTaskInfo, TaskDescription, create_task_info, waiting_external_inputs,
 };
 use crate::state::execution_stage::{
-    PendingPartitions, RunningStage, is_external_fetch_failure, stage_input_partitions,
+    PendingPartitions, RunningStage, external_fetch_failures, external_reader_partitions,
+    fold_external_locations, stage_input_partitions, with_external_locations,
 };
 use crate::state::task_builder::stages_read_whole;
 
@@ -290,6 +293,16 @@ impl PipelinedExecutionGraph {
         let pipelined_stages = shuffle_stages
             .into_iter()
             .map(|stage| {
+                let stage_plan: Arc<dyn ExecutionPlan> = stage.clone();
+                if let Some(writer) = stage_plan.downcast_ref::<SortShuffleWriterExec>()
+                    && matches!(writer.routing(), ShuffleRouting::PartitionId { .. })
+                {
+                    return Err(BallistaError::General(
+                        "PartitionIdRepartitionExec is not supported in pipelined \
+                         execution, which only shuffles by hash"
+                            .to_owned(),
+                    ));
+                }
                 let input = stage.children()[0].clone();
                 let writer = PipelinedShuffleWriterExec::try_new(
                     job_id.clone(),
@@ -349,11 +362,14 @@ impl PipelinedExecutionGraph {
         matches!(self.status.status, Some(Status::Running(_)))
     }
 
-    /// Whether the job still waits to be placed: running, and not placed yet.
-    /// A job can stop waiting between planning its placement and committing
-    /// it, if it is cancelled or fails meanwhile.
+    /// Whether the job still waits to be placed: running, not placed yet, and
+    /// not waiting for lost `DataFrame::cache()` data to be rebuilt. A job can
+    /// stop waiting between planning its placement and committing it, if it
+    /// is cancelled or fails meanwhile.
     pub fn awaits_placement(&self) -> bool {
-        !self.placed && self.is_running()
+        !self.placed
+            && self.is_running()
+            && waiting_external_inputs(&self.stages).next().is_none()
     }
 
     /// What placing each stage takes, or `None` once the job is placed or no
@@ -402,7 +418,7 @@ impl PipelinedExecutionGraph {
     ) -> Result<Vec<BoundTask>> {
         if !self.awaits_placement() {
             return Err(BallistaError::Internal(format!(
-                "pipelined job {} is already placed or no longer running",
+                "pipelined job {} is already placed, no longer running, or waiting for a cache to be rebuilt",
                 self.job_id
             )));
         }
@@ -419,6 +435,13 @@ impl PipelinedExecutionGraph {
             )));
         }
 
+        let endpoints: HashMap<&str, Arc<ExecutorEndpoint>> = executors
+            .iter()
+            .map(|(id, metadata)| {
+                (id.as_str(), Arc::new(ExecutorEndpoint::from(metadata)))
+            })
+            .collect();
+
         // Where every producer task serves each of its output partitions.
         let mut outputs: HashMap<
             usize,
@@ -428,7 +451,7 @@ impl PipelinedExecutionGraph {
             let plan = self.stage(*stage_id)?.plan_arc();
             let stage_outputs = outputs.entry(*stage_id).or_default();
             for (task_id, (executor_id, partitions)) in tasks.iter().enumerate() {
-                let executor_meta = executors.get(executor_id).ok_or_else(|| {
+                let executor_meta = endpoints.get(executor_id.as_str()).ok_or_else(|| {
                     BallistaError::Internal(format!(
                         "no metadata for executor {executor_id} placed in pipelined job {}",
                         self.job_id
@@ -737,7 +760,10 @@ impl ExecutionGraph for PipelinedExecutionGraph {
             }
             match outcome {
                 Some(task_status::Status::Successful(_)) => {
-                    stage.update_task_metrics(task_id, metrics)?;
+                    // A task whose metrics can't be merged still succeeded.
+                    if let Err(e) = stage.update_task_metrics(task_id, metrics) {
+                        stage.log_skipped_metrics(&self.job_id, task_id, &e);
+                    }
                 }
                 Some(task_status::Status::Failed(failed)) => {
                     failure.get_or_insert_with(|| {
@@ -745,12 +771,13 @@ impl ExecutionGraph for PipelinedExecutionGraph {
                         // lost build is dropped and a retry rebuilds it.
                         if let Some(FailedReason::FetchPartitionError(fetch)) =
                             &failed.failed_reason
-                            && is_external_fetch_failure(
+                            && !external_fetch_failures(
                                 &stage.inputs,
                                 &fetch.executor_id,
                                 fetch.map_stage_id as usize,
                                 fetch.map_partition_id as usize,
                             )
+                            .is_empty()
                         {
                             format!(
                                 "stage {stage_id} {CACHE_DATA_LOST} on executor {}",
@@ -867,13 +894,80 @@ impl ExecutionGraph for PipelinedExecutionGraph {
         vec![]
     }
 
-    /// Nothing is rolled back: losing an executor fails the job instead (see
-    /// [`PipelinedExecutionGraph::lost_executor`]).
+    /// Nothing is rolled back: once placed, losing an executor fails the job
+    /// instead (see [`PipelinedExecutionGraph::lost_executor`]). Before then
+    /// no task has run, so a cache read loses only its locations on the
+    /// executor, and the job waits for the cache to be rebuilt.
     fn reset_stages_on_lost_executor(
         &mut self,
-        _executor_id: &str,
+        executor_id: &str,
     ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)> {
+        if !self.placed {
+            for stage in self.stages.values_mut() {
+                let inputs = match stage {
+                    ExecutionStage::UnResolved(stage) => &mut stage.inputs,
+                    ExecutionStage::Resolved(stage) => &mut stage.inputs,
+                    _ => continue,
+                };
+                for (_, output) in inputs
+                    .iter_mut()
+                    .filter(|(id, _)| is_external_stage_id(**id))
+                {
+                    for locations in output.partition_locations.values_mut() {
+                        let before = locations.len();
+                        locations.retain(|loc| loc.executor_meta.id != executor_id);
+                        if locations.len() < before {
+                            output.complete = false;
+                        }
+                    }
+                }
+            }
+        }
         Ok((HashSet::new(), vec![]))
+    }
+
+    /// Until it is placed, nothing has read or streamed anything, so the job
+    /// can wait for lost cache data to be rebuilt. Once placed, its tasks
+    /// stream to each other and its results to the client, so it cannot.
+    fn recovers_external_inputs(&self) -> bool {
+        !self.placed && self.is_running()
+    }
+
+    fn resolve_external_input(
+        &mut self,
+        input_id: usize,
+        locations: Vec<Vec<PartitionLocation>>,
+    ) -> Result<Vec<QueryStageSchedulerEvent>> {
+        if !self.recovers_external_inputs() {
+            return Err(BallistaError::General(format!(
+                "pipelined job {} cannot resume after it is placed",
+                self.job_id
+            )));
+        }
+        for (stage_id, stage) in self.stages.iter_mut() {
+            let (inputs, plan) = match stage {
+                ExecutionStage::UnResolved(stage) => (&mut stage.inputs, &mut stage.plan),
+                ExecutionStage::Resolved(stage) => (&mut stage.inputs, &mut stage.plan),
+                _ => continue,
+            };
+            if inputs
+                .get(&input_id)
+                .is_none_or(|input| input.is_complete())
+            {
+                continue;
+            }
+            let partitions = external_reader_partitions(plan.as_ref(), input_id)
+                .ok_or_else(|| {
+                    BallistaError::Internal(format!(
+                        "stage {stage_id} waits on external input {input_id} but does not read it"
+                    ))
+                })?;
+            let output = fold_external_locations(locations.clone(), partitions)?;
+            *plan = with_external_locations(plan.clone(), input_id, &output)?;
+            inputs.insert(input_id, output);
+        }
+        // Placed by the next offer round, which the caller starts.
+        Ok(vec![])
     }
 
     fn resolve_stage(&mut self, _stage_id: usize) -> Result<bool> {
@@ -1003,19 +1097,18 @@ mod tests {
     use super::*;
     use crate::config::SchedulerConfig;
     use crate::metrics::default_metrics_collector;
-    use crate::planner::DefaultDistributedPlanner;
     use crate::test_utils::{
-        SchedulerTest, TaskRunnerFn, await_condition, mock_completed_task, mock_executor,
-        mock_failed_task, test_aggregation_plan, test_join_plan,
+        SchedulerTest, TaskRunnerFn, aggregation_logical_plan, await_condition,
+        execution_failure, failing_task_runner, id_gmv_schema, mock_completed_task,
+        mock_executor, mock_failed_task, pipelined_graph_from_physical,
+        test_aggregation_plan, test_join_plan,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::SessionConfigExt;
-    use ballista_core::serde::protobuf::{
-        ExecutionError, FailedTask, MultiTaskDefinition, failed_task,
-    };
+    use ballista_core::serde::protobuf::{FailedTask, MultiTaskDefinition};
+
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{LogicalPlan, col};
+    use datafusion::logical_expr::LogicalPlan;
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1161,8 +1254,29 @@ mod tests {
     }
 
     async fn pipelined_join_graph() -> PipelinedExecutionGraph {
-        let plan = test_join_plan(4).await.physical_plan();
-        PipelinedExecutionGraph::new(
+        pipelined_graph_from_physical(
+            test_join_plan(4).await.physical_plan(),
+            SessionConfig::new_with_ballista(),
+        )
+    }
+
+    #[test]
+    fn a_partition_id_shuffle_is_refused_in_pipelined_mode() {
+        use crate::planner::DefaultDistributedPlanner;
+        use ballista_core::execution_plans::PartitionIdRepartitionExec;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::physical_plan::empty::EmptyExec;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("v", DataType::Int64, false),
+            Field::new("pid", DataType::Int32, false),
+        ]));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            PartitionIdRepartitionExec::try_new(Arc::new(EmptyExec::new(schema)), 1, 4)
+                .unwrap(),
+        );
+
+        let Err(err) = PipelinedExecutionGraph::new(
             "localhost:50050",
             &"job".into(),
             "",
@@ -1172,8 +1286,12 @@ mod tests {
             Arc::new(SessionConfig::new_with_ballista()),
             &mut DefaultDistributedPlanner::new(),
             None,
-        )
-        .unwrap()
+        ) else {
+            panic!("the marker has no pipelined form");
+        };
+
+        let err = err.to_string();
+        assert!(err.contains("PartitionIdRepartitionExec"), "{err}");
     }
 
     fn executors(ids: &[&str]) -> HashMap<String, ExecutorMetadata> {
@@ -1221,6 +1339,31 @@ mod tests {
                 .output_links()
                 .is_empty()
         );
+    }
+
+    /// Readers have many locations on each of a few executors. All of those
+    /// must share the executor's address rather than each hold a copy of it.
+    #[tokio::test]
+    async fn locations_on_one_executor_share_its_address() {
+        let mut graph = pipelined_join_graph().await;
+        let tasks = place(&mut graph);
+
+        let mut last_on_executor = HashMap::new();
+        let mut shared_with_an_earlier_location = 0;
+        for (_, task) in &tasks {
+            for reader in readers(&task.plan) {
+                for location in reader.partition.iter().flatten() {
+                    let executor = &location.executor_meta;
+                    if let Some(earlier) =
+                        last_on_executor.insert(executor.id.clone(), executor.clone())
+                    {
+                        assert!(Arc::ptr_eq(&earlier, executor));
+                        shared_with_an_earlier_location += 1;
+                    }
+                }
+            }
+        }
+        assert!(shared_with_an_earlier_location > 0);
     }
 
     #[tokio::test]
@@ -1284,18 +1427,7 @@ mod tests {
             .create_physical_plan(&state.optimize(&plan).unwrap())
             .await
             .unwrap();
-        PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
-            plan,
-            0,
-            Arc::new(config),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )
-        .unwrap()
+        pipelined_graph_from_physical(plan, config)
     }
 
     /// A cross join reads its left side in full in every task of its stage,
@@ -1303,10 +1435,7 @@ mod tests {
     /// could be read by only one.
     #[tokio::test]
     async fn an_input_every_task_reads_in_full_is_replayed() {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
+        let schema = id_gmv_schema();
         let left = scan_empty_with_partitions(Some("left"), &schema, None, 2)
             .unwrap()
             .build()
@@ -1437,12 +1566,9 @@ mod tests {
         let failed = mock_failed_task(
             task.clone(),
             FailedTask {
-                error: "boom".to_owned(),
                 retryable: true,
                 count_to_failures: true,
-                failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                    ExecutionError {},
-                )),
+                ..execution_failure("boom")
             },
         );
         let events = graph
@@ -1480,38 +1606,16 @@ mod tests {
 
     #[tokio::test]
     async fn aggregation_plan_places_a_collapse_free_two_stage_job() {
-        let plan = test_aggregation_plan(4).await.physical_plan();
-        let graph = PipelinedExecutionGraph::new(
-            "localhost:50050",
-            &"job".into(),
-            "",
-            "session",
-            plan,
-            0,
-            Arc::new(SessionConfig::new_with_ballista()),
-            &mut DefaultDistributedPlanner::new(),
-            None,
-        )
-        .unwrap();
+        let graph = pipelined_graph_from_physical(
+            test_aggregation_plan(4).await.physical_plan(),
+            SessionConfig::new_with_ballista(),
+        );
         let requirements = graph.placement_requirements().unwrap();
         assert_eq!(requirements.len(), 2);
         assert!(requirements.iter().all(|r| r.partitions > 0));
     }
 
     // Scheduler-level tests: a real event loop over virtual executors.
-
-    fn aggregation(partitions: usize) -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
 
     async fn pipelined_scheduler(
         policy: TaskSchedulingPolicy,
@@ -1535,15 +1639,12 @@ mod tests {
     async fn pipelined_job_runs_to_success_and_releases_its_vcores() -> Result<()> {
         let mut test = pipelined_scheduler(TaskSchedulingPolicy::PushStaged, None).await;
         assert_eq!(test.free_vcores().await?, 8);
-        let (status, _) = test.run("pipelined", &aggregation(4)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         assert!(
             matches!(status.status, Some(Status::Successful(_))),
             "{status:?}"
         );
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "the job's vcores were not released");
         Ok(())
     }
@@ -1562,7 +1663,9 @@ mod tests {
         let mut test =
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
-        let job_id = test.submit("pipelined", &aggregation(4)).await?;
+        let job_id = test
+            .submit("pipelined", &aggregation_logical_plan(4))
+            .await?;
 
         let all_launched = await_condition(Duration::from_millis(20), 100, || async {
             Ok(launched.lock().unwrap().len() == 2)
@@ -1576,54 +1679,26 @@ mod tests {
         assert!(test.free_vcores().await? < 8, "the job reserved vcores");
 
         test.cancel(&job_id).await?;
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "cancelling the job did not release its vcores");
         Ok(())
     }
 
     #[tokio::test]
     async fn pipelined_job_fails_when_a_task_fails() -> Result<()> {
-        let runner =
-            TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
-                task.task_ids
-                    .iter()
-                    .map(|id| TaskStatus {
-                        task_id: id.task_id,
-                        job_id: task.job_id.clone(),
-                        stage_id: task.stage_id,
-                        stage_attempt_num: task.stage_attempt_num,
-                        launch_time: 0,
-                        start_exec_time: 0,
-                        end_exec_time: 0,
-                        metrics: vec![],
-                        status: Some(task_status::Status::Failed(FailedTask {
-                            error: format!("injected failure on {executor_id}"),
-                            retryable: true,
-                            count_to_failures: true,
-                            failed_reason: Some(
-                                failed_task::FailedReason::ExecutionError(
-                                    ExecutionError {},
-                                ),
-                            ),
-                        })),
-                    })
-                    .collect()
-            });
+        let runner = failing_task_runner(|executor_id| FailedTask {
+            retryable: true,
+            count_to_failures: true,
+            ..execution_failure(&format!("injected failure on {executor_id}"))
+        });
         let mut test =
-            pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
-                .await;
-        let (status, _) = test.run("pipelined", &aggregation(4)).await?;
+            pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(runner)).await;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         let Some(Status::Failed(failed)) = status.status else {
             panic!("expected the job to fail, got {status:?}");
         };
         assert!(failed.error.contains("do not retry"), "{}", failed.error);
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "a failed job's vcores were not released");
         Ok(())
     }
@@ -1632,15 +1707,12 @@ mod tests {
     async fn pipelined_job_wider_than_the_cluster_shares_its_vcores() -> Result<()> {
         let mut test = pipelined_scheduler(TaskSchedulingPolicy::PushStaged, None).await;
         test.set_session_option("datafusion.execution.target_partitions", "64")?;
-        let (status, _) = test.run("pipelined", &aggregation(64)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(64)).await?;
         assert!(
             matches!(status.status, Some(Status::Successful(_))),
             "{status:?}"
         );
-        let released = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 8)
-        })
-        .await?;
+        let released = test.await_free_vcores(|free| free == 8).await?;
         assert!(released, "the job's vcores were not released");
         Ok(())
     }
@@ -1681,13 +1753,10 @@ mod tests {
                 )
             };
 
-            let holder = test.submit("holder", &aggregation(8)).await?;
-            let held = await_condition(Duration::from_millis(20), 100, || async {
-                Ok(test.free_vcores().await? == 0)
-            })
-            .await?;
+            let holder = test.submit("holder", &aggregation_logical_plan(8)).await?;
+            let held = test.await_free_vcores(|free| free == 0).await?;
             assert!(held, "the first job did not take every vcore");
-            let waiter = test.submit("waiter", &aggregation(8)).await?;
+            let waiter = test.submit("waiter", &aggregation_logical_plan(8)).await?;
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert!(
                 !placed(test.job_status(&waiter).await?),
@@ -1721,24 +1790,16 @@ mod tests {
         let mut test =
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
-        let job_id = test.submit("pipelined", &aggregation(4)).await?;
-        let reserved = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? < 8)
-        })
-        .await?;
+        let job_id = test
+            .submit("pipelined", &aggregation_logical_plan(4))
+            .await?;
+        let reserved = test.await_free_vcores(|free| free < 8).await?;
         assert!(reserved, "the job was never placed");
 
         test.lose_executor("virtual-executor-0").await?;
-        let failed = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(matches!(
-                test.job_status(&job_id).await?,
-                Some(JobStatus {
-                    status: Some(Status::Failed(_)),
-                    ..
-                })
-            ))
-        })
-        .await?;
+        let failed = test
+            .await_job_status(&job_id, |status| matches!(status, Status::Failed(_)))
+            .await?;
         assert!(failed, "losing an executor did not fail the job");
         Ok(())
     }
@@ -1754,25 +1815,17 @@ mod tests {
             pipelined_scheduler(TaskSchedulingPolicy::PushStaged, Some(Arc::new(runner)))
                 .await;
         test.set_session_option("datafusion.execution.target_partitions", "8")?;
-        let job_id = test.submit("pipelined", &aggregation(8)).await?;
-        let reserved = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(test.free_vcores().await? == 0)
-        })
-        .await?;
+        let job_id = test
+            .submit("pipelined", &aggregation_logical_plan(8))
+            .await?;
+        let reserved = test.await_free_vcores(|free| free == 0).await?;
         assert!(reserved, "the job was never placed on every vcore");
 
         test.lose_executor("virtual-executor-0").await?;
         test.register_executor("virtual-executor-0", 4).await?;
-        let failed = await_condition(Duration::from_millis(20), 100, || async {
-            Ok(matches!(
-                test.job_status(&job_id).await?,
-                Some(JobStatus {
-                    status: Some(Status::Failed(_)),
-                    ..
-                })
-            ))
-        })
-        .await?;
+        let failed = test
+            .await_job_status(&job_id, |status| matches!(status, Status::Failed(_)))
+            .await?;
         assert!(failed, "losing an executor did not fail the job");
         // The reservation is released before the job is evicted.
         let evicted = await_condition(Duration::from_millis(20), 100, || async {
@@ -1787,11 +1840,99 @@ mod tests {
     #[tokio::test]
     async fn pipelined_job_is_rejected_under_pull_staged_scheduling() -> Result<()> {
         let mut test = pipelined_scheduler(TaskSchedulingPolicy::PullStaged, None).await;
-        let (status, _) = test.run("pipelined", &aggregation(4)).await?;
+        let (status, _) = test.run("pipelined", &aggregation_logical_plan(4)).await?;
         let Some(Status::Failed(failed)) = status.status else {
             panic!("expected the job to fail, got {status:?}");
         };
         assert!(failed.error.contains("push-staged"), "{}", failed.error);
         Ok(())
+    }
+
+    fn cache_location(partition: usize, executor: &str) -> PartitionLocation {
+        PartitionLocation {
+            map_partition_id: partition,
+            partition_id: PartitionId::new(&"cache-job".into(), 1, partition),
+            executor_meta: Arc::new(ExecutorEndpoint {
+                id: executor.to_owned(),
+                host: "localhost".to_owned(),
+                port: 0,
+            }),
+            partition_stats: Default::default(),
+            file_id: Some(0),
+            is_sort_shuffle: false,
+        }
+    }
+
+    /// A pipelined job reading a cache whose executor is lost before the job
+    /// is placed: nothing has run, so rather than fail, it waits until the
+    /// cache is rebuilt and is then placed reading only the rebuild. Once
+    /// placed, it no longer recovers.
+    #[tokio::test]
+    async fn a_cache_lost_before_placement_is_read_again_once_rebuilt() {
+        use crate::cache::EXTERNAL_STAGE_ID_BASE;
+        use ballista_core::execution_plans::ShuffleReaderExec;
+        use datafusion::physical_plan::Partitioning;
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let reader = ShuffleReaderExec::try_new(
+            EXTERNAL_STAGE_ID_BASE,
+            vec![
+                vec![cache_location(0, "exec-cache")],
+                vec![cache_location(1, "exec-cache")],
+            ],
+            schema,
+            Partitioning::UnknownPartitioning(2),
+        )
+        .unwrap();
+        let mut graph = pipelined_graph_from_physical(
+            Arc::new(reader),
+            SessionConfig::new_with_ballista(),
+        );
+        assert!(graph.recovers_external_inputs());
+
+        graph.reset_stages_on_lost_executor("exec-cache").unwrap();
+        assert_eq!(
+            graph.waiting_external_inputs(),
+            vec![EXTERNAL_STAGE_ID_BASE]
+        );
+        assert_eq!(
+            graph.placement_requirements(),
+            None,
+            "not placed onto lost data"
+        );
+
+        let rebuilt = vec![
+            vec![cache_location(0, "exec-new")],
+            vec![cache_location(1, "exec-new")],
+        ];
+        let events = graph
+            .resolve_external_input(EXTERNAL_STAGE_ID_BASE, rebuilt)
+            .unwrap();
+        assert!(events.is_empty());
+        let tasks = place(&mut graph);
+
+        fn cache_reads(plan: &Arc<dyn ExecutionPlan>) -> Vec<PartitionLocation> {
+            let own = plan
+                .downcast_ref::<ShuffleReaderExec>()
+                .filter(|reader| reader.stage_id == EXTERNAL_STAGE_ID_BASE)
+                .map(|reader| reader.partition.iter().flatten().cloned().collect())
+                .unwrap_or_else(Vec::new);
+            plan.children()
+                .into_iter()
+                .flat_map(cache_reads)
+                .chain(own)
+                .collect()
+        }
+        let read: Vec<PartitionLocation> = tasks
+            .iter()
+            .flat_map(|(_, task)| cache_reads(&task.plan))
+            .collect();
+        assert!(!read.is_empty(), "the placed tasks read the cache");
+        assert!(read.iter().all(|loc| loc.executor_meta.id == "exec-new"));
+        assert!(
+            !graph.recovers_external_inputs(),
+            "a placed job fails instead"
+        );
     }
 }

@@ -17,21 +17,23 @@
 
 //! Job-failure lifecycle tests for the adaptive execution graph.
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
-use crate::test_utils::mock_executor;
+use crate::test_utils::{
+    fetch_partition_failure, join_aggregate_sort_logical_plan, mock_executor,
+    mock_failed_task, revive_graph_and_complete_next_stage_with_executor,
+};
 use ballista_core::error::Result;
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::{
     FailedTask, JobStatus, ShuffleWritePartition, SuccessfulTask, failed_task,
     job_status, task_status,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::context::{SessionConfig, SessionContext};
-use datafusion::functions_aggregate::sum::sum;
-use datafusion::logical_expr::SortExpr;
-use datafusion::prelude::{JoinType, col};
-use datafusion::test_util::scan_empty_with_partitions;
+use std::sync::Arc;
 
 /// Builds an adaptive graph for a join (two concurrent leaf stages).
 async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
@@ -42,26 +44,7 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         .enable_round_robin_repartition = false;
     let ctx = SessionContext::new_with_config(config);
 
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
-        Field::new("gmv", DataType::UInt64, false),
-    ]);
-
-    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
-    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
-        .unwrap()
-        .build()
-        .unwrap();
-    let sort_expr = SortExpr::new(col("id"), false, false);
-    let logical_plan = left_plan
-        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
-        .unwrap()
-        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
-        .unwrap()
-        .sort(vec![sort_expr])
-        .unwrap()
-        .build()
-        .unwrap();
+    let logical_plan = join_aggregate_sort_logical_plan();
 
     AdaptiveExecutionGraph::try_new(
         "localhost:50050",
@@ -71,9 +54,114 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         &logical_plan,
         0,
         None,
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
     )
     .await
     .unwrap()
+}
+
+/// Builds an adaptive graph for an aggregation: a map stage, then a reduce
+/// stage reading its shuffle output.
+async fn test_aggregation_plan() -> AdaptiveExecutionGraph {
+    let ctx = SessionContext::new_with_config(mock_context().copied_config());
+    ctx.register_batch("t", mock_batch().unwrap()).unwrap();
+    let sql = "select c, sum(a) from t group by c";
+    let plan = ctx.sql(sql).await.unwrap().logical_plan().clone();
+    AdaptiveExecutionGraph::try_new(
+        "localhost:50050",
+        &"job".into(),
+        "",
+        &ctx,
+        &plan,
+        0,
+        None,
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
+    )
+    .await
+    .unwrap()
+}
+
+/// Runs the map stage of an aggregation on executor "a", leaving the reduce
+/// stage, which reads its output, running.
+async fn aggregation_with_map_output_on_a() -> AdaptiveExecutionGraph {
+    let mut graph = test_aggregation_plan().await;
+    revive_graph_and_complete_next_stage_with_executor(
+        &mut graph,
+        &mock_executor("a".to_string()),
+    )
+    .unwrap();
+    graph.revive();
+    assert!(matches!(graph.stages[&0], ExecutionStage::Successful(_)));
+    assert!(matches!(graph.stages[&1], ExecutionStage::Running(_)));
+    graph
+}
+
+const CANNOT_RERUN: &str = "cannot rerun a finished stage";
+
+// AQE cannot rerun a finished stage whose output was lost (#1986): its
+// planner no longer tracks the stage, so the rerun's tasks could not report
+// and the job hung (#2539). Losing the executor with that output fails the
+// rollback instead, and the task manager fails the job on that error.
+#[tokio::test]
+async fn losing_the_output_of_a_finished_stage_fails_the_rollback() {
+    let mut graph = aggregation_with_map_output_on_a().await;
+
+    let err = graph.reset_stages_on_lost_executor("a").unwrap_err();
+
+    assert!(err.to_string().contains(CANNOT_RERUN), "{err}");
+}
+
+// Nothing in the adaptive graph resolves a stage again once it is rolled back,
+// so losing a stage's input fails the job even when the input is not a
+// finished stage of this graph, as when it was dropped from it.
+#[tokio::test]
+async fn losing_the_input_of_a_stage_fails_the_rollback() {
+    let mut graph = aggregation_with_map_output_on_a().await;
+    graph.stages.remove(&0);
+
+    let err = graph.reset_stages_on_lost_executor("a").unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("stage 1 lost input on executor a, and adaptive query execution cannot roll back a stage"),
+        "{err}"
+    );
+    assert!(matches!(graph.stages[&1], ExecutionStage::Running(_)));
+}
+
+// The same loss, found by a reduce task failing to fetch the map output: the
+// job fails instead of hanging.
+#[tokio::test]
+async fn a_fetch_failure_on_the_output_of_a_finished_stage_fails_the_job() -> Result<()> {
+    let mut graph = aggregation_with_map_output_on_a().await;
+    let b = mock_executor("b".to_string());
+    let task = graph.pop_next_task(&b.id)?.unwrap();
+    let status = mock_failed_task(task, fetch_partition_failure("a", 0, 0));
+
+    let events = graph.update_task_status(&b, vec![status], 4, 4)?;
+
+    // The event aborts the job and cancels its tasks. The failed stage is the
+    // reading stage 1, not the finished stage 0 whose output was lost.
+    let fail_message = events
+        .iter()
+        .find_map(|event| match event {
+            QueryStageSchedulerEvent::JobRunningFailed { fail_message, .. } => {
+                Some(fail_message)
+            }
+            _ => None,
+        })
+        .expect("a JobRunningFailed event");
+    assert!(fail_message.contains("stage 1 failed"), "{fail_message}");
+    assert!(
+        fail_message.contains("finished stage 0 was lost"),
+        "{fail_message}"
+    );
+    assert!(fail_message.contains(CANNOT_RERUN), "{fail_message}");
+    assert!(matches!(
+        graph.status().status,
+        Some(job_status::Status::Failed(_))
+    ));
+    Ok(())
 }
 
 // Same contract as the static graph's test: aborting transitions every running

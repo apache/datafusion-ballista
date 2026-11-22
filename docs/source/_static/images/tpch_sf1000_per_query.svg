@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 444" width="880" height="444" role="img" aria-label="Column chart of time per query, comparing Apache Spark 4.1.3, Ballista staged (default) and Ballista pipelined (experimental). Faster than Spark on 20 of 22 queries by default, on all 22 pipelined. The numbers are in the table in the benchmarking guide.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    .title { font-size: 20px; font-weight: 600; }
+    .sub { font-size: 14px; fill: #59636e; }
+    .legend { font-size: 14px; }
+    .tick { font-size: 12.5px; fill: #59636e; }
+    .note { font-size: 12.5px; fill: #59636e; }
+    .grid { stroke: #e1e0d9; stroke-width: 1; }
+    .axis { stroke: #c3c2b7; stroke-width: 1; }
+    .spark { fill: #898781; }
+    .staged { fill: #2a78d6; }
+    .pipelined { fill: #eb6834; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+      .sub, .note, .tick { fill: #9198a1; }
+      .grid { stroke: #21262d; }
+      .axis { stroke: #3d444d; }
+      .staged { fill: #3987e5; }
+      .pipelined { fill: #d95926; }
+    }
+  </style>
+  <defs>
+    <clipPath id="above-baseline"><rect x="0" y="0" width="880" height="384"/></clipPath>
+  </defs>
+  <rect class="bg" width="880" height="444" rx="6"/>
+  <text class="title" x="24" y="36">Faster than Spark on 20 of 22 queries by default, on all 22 pipelined</text>
+  <text class="sub" x="24" y="60">Time per query in seconds. Lower is better.</text>
+
+  <rect class="spark" x="24" y="76" width="12" height="12" rx="2"/>
+  <text class="legend" x="42" y="87">Apache Spark 4.1.3</text>
+  <rect class="staged" x="188" y="76" width="12" height="12" rx="2"/>
+  <text class="legend" x="206" y="87">Ballista staged (default)</text>
+  <rect class="pipelined" x="401" y="76" width="12" height="12" rx="2"/>
+  <text class="legend" x="419" y="87">Ballista pipelined (experimental)</text>
+
+  <line class="grid" x1="52" y1="334" x2="866" y2="334"/>
+  <line class="grid" x1="52" y1="284" x2="866" y2="284"/>
+  <line class="grid" x1="52" y1="234" x2="866" y2="234"/>
+  <line class="grid" x1="52" y1="184" x2="866" y2="184"/>
+  <line class="grid" x1="52" y1="134" x2="866" y2="134"/>
+
+  <g class="spark" clip-path="url(#above-baseline)">
+    <rect x="55" y="241.1" width="9" height="145.9" rx="2"/>
+    <rect x="92" y="308.04" width="9" height="78.96" rx="2"/>
+    <rect x="129" y="322.78" width="9" height="64.22" rx="2"/>
+    <rect x="166" y="336.28" width="9" height="50.72" rx="2"/>
+    <rect x="203" y="269.22" width="9" height="117.78" rx="2"/>
+    <rect x="240" y="380.54" width="9" height="6.46" rx="2"/>
+    <rect x="277" y="333.32" width="9" height="53.68" rx="2"/>
+    <rect x="314" y="267.66" width="9" height="119.34" rx="2"/>
+    <rect x="351" y="234.2" width="9" height="152.8" rx="2"/>
+    <rect x="388" y="313.38" width="9" height="73.62" rx="2"/>
+    <rect x="425" y="320.68" width="9" height="66.32" rx="2"/>
+    <rect x="462" y="357.52" width="9" height="29.48" rx="2"/>
+    <rect x="499" y="338.54" width="9" height="48.46" rx="2"/>
+    <rect x="536" y="369.5" width="9" height="17.5" rx="2"/>
+    <rect x="573" y="339.1" width="9" height="47.9" rx="2"/>
+    <rect x="610" y="335.32" width="9" height="51.68" rx="2"/>
+    <rect x="647" y="221.28" width="9" height="165.72" rx="2"/>
+    <rect x="684" y="115.78" width="9" height="271.22" rx="2"/>
+    <rect x="721" y="357.46" width="9" height="29.54" rx="2"/>
+    <rect x="758" y="351.84" width="9" height="35.16" rx="2"/>
+    <rect x="795" y="187.92" width="9" height="199.08" rx="2"/>
+    <rect x="832" y="350.2" width="9" height="36.8" rx="2"/>
+  </g>
+
+  <g class="staged" clip-path="url(#above-baseline)">
+    <rect x="66" y="354.82" width="9" height="32.18" rx="2"/>
+    <rect x="103" y="320.34" width="9" height="66.66" rx="2"/>
+    <rect x="140" y="349.36" width="9" height="37.64" rx="2"/>
+    <rect x="177" y="361.22" width="9" height="25.78" rx="2"/>
+    <rect x="214" y="314.42" width="9" height="72.58" rx="2"/>
+    <rect x="251" y="380.2" width="9" height="6.8" rx="2"/>
+    <rect x="288" y="349.56" width="9" height="37.44" rx="2"/>
+    <rect x="325" y="350.86" width="9" height="36.14" rx="2"/>
+    <rect x="362" y="315.82" width="9" height="71.18" rx="2"/>
+    <rect x="399" y="304.22" width="9" height="82.78" rx="2"/>
+    <rect x="436" y="364.76" width="9" height="22.24" rx="2"/>
+    <rect x="473" y="368.7" width="9" height="18.3" rx="2"/>
+    <rect x="510" y="364.14" width="9" height="22.86" rx="2"/>
+    <rect x="547" y="370.34" width="9" height="16.66" rx="2"/>
+    <rect x="584" y="357.74" width="9" height="29.26" rx="2"/>
+    <rect x="621" y="359.7" width="9" height="27.3" rx="2"/>
+    <rect x="658" y="340.38" width="9" height="46.62" rx="2"/>
+    <rect x="695" y="313.8" width="9" height="73.2" rx="2"/>
+    <rect x="732" y="366.32" width="9" height="20.68" rx="2"/>
+    <rect x="769" y="355" width="9" height="32" rx="2"/>
+    <rect x="806" y="312.58" width="9" height="74.42" rx="2"/>
+    <rect x="843" y="363.68" width="9" height="23.32" rx="2"/>
+  </g>
+
+  <g class="pipelined" clip-path="url(#above-baseline)">
+    <rect x="77" y="359.62" width="9" height="27.38" rx="2"/>
+    <rect x="114" y="357.36" width="9" height="29.64" rx="2"/>
+    <rect x="151" y="368.06" width="9" height="18.94" rx="2"/>
+    <rect x="188" y="372.92" width="9" height="14.08" rx="2"/>
+    <rect x="225" y="349.22" width="9" height="37.78" rx="2"/>
+    <rect x="262" y="381.42" width="9" height="5.58" rx="2"/>
+    <rect x="299" y="367.46" width="9" height="19.54" rx="2"/>
+    <rect x="336" y="347.6" width="9" height="39.4" rx="2"/>
+    <rect x="373" y="324.02" width="9" height="62.98" rx="2"/>
+    <rect x="410" y="340.3" width="9" height="46.7" rx="2"/>
+    <rect x="447" y="377.76" width="9" height="9.24" rx="2"/>
+    <rect x="484" y="376.96" width="9" height="10.04" rx="2"/>
+    <rect x="521" y="371.12" width="9" height="15.88" rx="2"/>
+    <rect x="558" y="381.2" width="9" height="5.8" rx="2"/>
+    <rect x="595" y="370.34" width="9" height="16.66" rx="2"/>
+    <rect x="632" y="373.26" width="9" height="13.74" rx="2"/>
+    <rect x="669" y="348.4" width="9" height="38.6" rx="2"/>
+    <rect x="706" y="326.04" width="9" height="60.96" rx="2"/>
+    <rect x="743" y="368.66" width="9" height="18.34" rx="2"/>
+    <rect x="780" y="371.12" width="9" height="15.88" rx="2"/>
+    <rect x="817" y="319.82" width="9" height="67.18" rx="2"/>
+    <rect x="854" y="373.56" width="9" height="13.44" rx="2"/>
+  </g>
+
+  <line class="axis" x1="52" y1="384" x2="866" y2="384"/>
+
+  <g class="tick" text-anchor="end">
+    <text class="tick" x="44" y="388">0</text>
+    <text class="tick" x="44" y="338">25</text>
+    <text class="tick" x="44" y="288">50</text>
+    <text class="tick" x="44" y="238">75</text>
+    <text class="tick" x="44" y="188">100</text>
+    <text class="tick" x="44" y="138">125</text>
+  </g>
+
+  <g text-anchor="middle">
+    <text class="tick" x="70.5" y="402">Q1</text>
+    <text class="tick" x="107.5" y="402">Q2</text>
+    <text class="tick" x="144.5" y="402">Q3</text>
+    <text class="tick" x="181.5" y="402">Q4</text>
+    <text class="tick" x="218.5" y="402">Q5</text>
+    <text class="tick" x="255.5" y="402">Q6</text>
+    <text class="tick" x="292.5" y="402">Q7</text>
+    <text class="tick" x="329.5" y="402">Q8</text>
+    <text class="tick" x="366.5" y="402">Q9</text>
+    <text class="tick" x="403.5" y="402">Q10</text>
+    <text class="tick" x="440.5" y="402">Q11</text>
+    <text class="tick" x="477.5" y="402">Q12</text>
+    <text class="tick" x="514.5" y="402">Q13</text>
+    <text class="tick" x="551.5" y="402">Q14</text>
+    <text class="tick" x="588.5" y="402">Q15</text>
+    <text class="tick" x="625.5" y="402">Q16</text>
+    <text class="tick" x="662.5" y="402">Q17</text>
+    <text class="tick" x="699.5" y="402">Q18</text>
+    <text class="tick" x="736.5" y="402">Q19</text>
+    <text class="tick" x="773.5" y="402">Q20</text>
+    <text class="tick" x="810.5" y="402">Q21</text>
+    <text class="tick" x="847.5" y="402">Q22</text>
+  </g>
+
+  <text class="note" x="24" y="430">Derived from TPC-H, not an official TPC-H result. SF1000, 32 executors with 8 vCPUs each. Mean of 2 runs.</text>
+</svg>

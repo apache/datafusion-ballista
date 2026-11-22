@@ -98,16 +98,94 @@ enum CacheClaim {
 /// A concurrent submission can change a key between lookup and claim.
 const CLAIM_ATTEMPTS: usize = 4;
 
+/// Why a cache build ends when its session is removed.
+const SESSION_CLOSED: &str = "its session was closed";
+
+/// Why a query whose session was removed while it ran fails when it loses a
+/// cache: it is not rebuilt for a removed session.
+fn session_closed_rebuild() -> String {
+    format!(
+        "{CACHE_DATA_LOST} after its session was closed, so it cannot be rebuilt; retry the query"
+    )
+}
+
+/// What waits on a build job.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Waiter {
+    /// A held job.
+    Held(JobId),
+    /// A running job's lost cache read, by external stage id.
+    Input(JobId, usize),
+}
+
+/// What a build job's end releases, or fails.
+#[derive(Default)]
+pub(crate) struct Released {
+    /// Held jobs.
+    pub(crate) jobs: Vec<PendingJob>,
+    /// Running jobs' lost reads, by external stage id.
+    pub(crate) inputs: Vec<(JobId, usize)>,
+}
+
+/// A running job's cache reads, kept to rebuild a cache whose data it loses.
+/// Holds nothing session-wide: a rebuild gets a context from the job's
+/// configuration, and an admission of its own.
+#[derive(Clone)]
+pub(crate) struct JobReads {
+    pub(crate) queued_at: u64,
+    pub(crate) reads: Vec<ResolvedRead>,
+    /// Its session was removed while it ran. A cache it then loses is not
+    /// rebuilt, as nothing would remove an entry made for a removed session.
+    pub(crate) session_closed: bool,
+}
+
+impl JobReads {
+    fn read(&self, input: usize) -> Option<&ResolvedRead> {
+        self.reads.iter().find(|read| read.input_id == input)
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     /// Build jobs claimed and not yet ended, with their cache. A job missing
     /// here is done, or never was a build job.
     inflight: HashMap<JobId, CacheKey>,
     pending: HashMap<JobId, PendingJob>,
-    /// Build job -> the held jobs waiting on it.
-    dependents: HashMap<JobId, HashSet<JobId>>,
+    /// Build job -> what waits on it.
+    dependents: HashMap<JobId, HashSet<Waiter>>,
     /// Running job -> the caches it reads.
-    reads: HashMap<JobId, Vec<ResolvedRead>>,
+    reads: HashMap<JobId, JobReads>,
+    /// Builds dropped with their session while running jobs still read them;
+    /// their data is cleaned up once no running job does.
+    orphaned: HashSet<JobId>,
+}
+
+/// What a job's end leaves to do.
+pub(crate) struct Ended {
+    /// The caches it read.
+    pub(crate) reads: Vec<ResolvedRead>,
+    /// Whether it is still a build in flight, held, or waited on.
+    pub(crate) linked: bool,
+    /// Builds dropped with their session that no running job reads any more,
+    /// whose data can now be cleaned up.
+    pub(crate) unread: Vec<JobId>,
+}
+
+impl Inner {
+    /// Whether a running job reads the output of `build`.
+    fn is_read(&self, build: &JobId) -> bool {
+        self.reads
+            .values()
+            .flat_map(|job_reads| &job_reads.reads)
+            .any(|read| &read.materializing_job == build)
+    }
+
+    /// Whether `job` still runs and reads `input`.
+    fn still_reads(&self, job: &JobId, input: usize) -> bool {
+        self.reads
+            .get(job)
+            .is_some_and(|job_reads| job_reads.read(input).is_some())
+    }
 }
 
 /// Tracks build jobs in flight, the jobs held for them, and running jobs' cache
@@ -150,52 +228,85 @@ impl CacheLinker {
                     .dependents
                     .entry(m.clone())
                     .or_default()
-                    .insert(job.job_id.clone());
+                    .insert(Waiter::Held(job.job_id.clone()));
             }
             inner.pending.insert(job.job_id.clone(), job);
         }
         ready
     }
 
-    /// `finished` built its cache: returns the held jobs now ready.
-    pub(crate) fn complete(&self, finished: &JobId) -> Vec<PendingJob> {
+    /// Makes `job`'s lost `input` wait for build job `on`. False if `on` has
+    /// already ended.
+    pub(crate) fn wait_for_input(&self, job: &JobId, input: usize, on: &JobId) -> bool {
+        let mut inner = self.inner.lock();
+        if !inner.inflight.contains_key(on) {
+            return false;
+        }
+        inner
+            .dependents
+            .entry(on.clone())
+            .or_default()
+            .insert(Waiter::Input(job.clone(), input));
+        true
+    }
+
+    /// `finished` built its cache: returns the held jobs now ready, and the
+    /// lost reads it rebuilt.
+    pub(crate) fn complete(&self, finished: &JobId) -> Released {
         let mut inner = self.inner.lock();
         inner.inflight.remove(finished);
-        let mut ready = Vec::new();
-        for id in inner.dependents.remove(finished).unwrap_or_default() {
-            let done = inner.pending.get_mut(&id).map(|job| {
-                job.waiting_on.remove(finished);
-                job.waiting_on.is_empty()
-            });
-            if done == Some(true)
-                && let Some(job) = inner.pending.remove(&id)
-            {
-                ready.push(job);
+        let mut released = Released::default();
+        for waiter in inner.dependents.remove(finished).unwrap_or_default() {
+            match waiter {
+                Waiter::Held(id) => {
+                    let done = inner.pending.get_mut(&id).map(|job| {
+                        job.waiting_on.remove(finished);
+                        job.waiting_on.is_empty()
+                    });
+                    if done == Some(true)
+                        && let Some(job) = inner.pending.remove(&id)
+                    {
+                        released.jobs.push(job);
+                    }
+                }
+                Waiter::Input(job, input) if inner.still_reads(&job, input) => {
+                    released.inputs.push((job, input))
+                }
+                Waiter::Input(..) => {}
             }
         }
-        ready
+        released
     }
 
     /// `failed` will not build its cache: removes and returns every held job
-    /// depending on it, directly or through another held build.
-    pub(crate) fn fail(&self, failed: &JobId) -> Vec<PendingJob> {
+    /// depending on it, directly or through another held build, and the lost
+    /// reads waiting on any of them.
+    pub(crate) fn fail(&self, failed: &JobId) -> Released {
         let mut inner = self.inner.lock();
         inner.inflight.remove(failed);
-        let mut victims = Vec::new();
+        let mut released = Released::default();
         let mut frontier = vec![failed.clone()];
         while let Some(id) = frontier.pop() {
-            for dependent in inner.dependents.remove(&id).unwrap_or_default() {
-                let Some(job) = inner.pending.remove(&dependent) else {
-                    continue;
-                };
-                if matches!(job.kind, PendingKind::Materialize { .. }) {
-                    inner.inflight.remove(&dependent);
-                    frontier.push(dependent);
+            for waiter in inner.dependents.remove(&id).unwrap_or_default() {
+                match waiter {
+                    Waiter::Held(dependent) => {
+                        let Some(job) = inner.pending.remove(&dependent) else {
+                            continue;
+                        };
+                        if matches!(job.kind, PendingKind::Materialize { .. }) {
+                            inner.inflight.remove(&dependent);
+                            frontier.push(dependent);
+                        }
+                        released.jobs.push(job);
+                    }
+                    Waiter::Input(job, input) if inner.still_reads(&job, input) => {
+                        released.inputs.push((job, input))
+                    }
+                    Waiter::Input(..) => {}
                 }
-                victims.push(job);
             }
         }
-        victims
+        released
     }
 
     /// Removes a held job the client cancelled.
@@ -204,21 +315,91 @@ impl CacheLinker {
     }
 
     /// Records the cache reads of a job being submitted.
-    pub(crate) fn record_reads(&self, job: &JobId, reads: Vec<ResolvedRead>) {
-        if !reads.is_empty() {
+    pub(crate) fn record_reads(&self, job: &JobId, reads: JobReads) {
+        if !reads.reads.is_empty() {
             self.inner.lock().reads.insert(job.clone(), reads);
         }
     }
 
-    /// `job` ended: returns its cache reads, and whether it is still a build in
-    /// flight, held, or waited on.
-    pub(crate) fn job_ended(&self, job: &JobId) -> (Vec<ResolvedRead>, bool) {
+    /// The cache reads of `job`, if it still runs.
+    pub(crate) fn reads_of(&self, job: &JobId) -> Option<JobReads> {
+        self.inner.lock().reads.get(job).cloned()
+    }
+
+    /// `job`'s `input` now reads the build made by `materializing_job`.
+    pub(crate) fn input_rebuilt(
+        &self,
+        job: &JobId,
+        input: usize,
+        materializing_job: JobId,
+    ) {
+        if let Some(read) = self.inner.lock().reads.get_mut(job).and_then(|job_reads| {
+            job_reads.reads.iter_mut().find(|r| r.input_id == input)
+        }) {
+            read.materializing_job = materializing_job;
+        }
+    }
+
+    /// `job` ended: its cache reads, whether it is still linked, and the builds
+    /// dropped with their session that it was the last to read.
+    pub(crate) fn job_ended(&self, job: &JobId) -> Ended {
         let mut inner = self.inner.lock();
-        let reads = inner.reads.remove(job).unwrap_or_default();
+        let reads = inner
+            .reads
+            .remove(job)
+            .map(|job_reads| job_reads.reads)
+            .unwrap_or_default();
         let linked = inner.inflight.contains_key(job)
             || inner.pending.contains_key(job)
             || inner.dependents.contains_key(job);
-        (reads, linked)
+        // Every orphan is checked, not just the builds `job` read: a read moves
+        // to a rebuild's output, so the build it read before is read by no one.
+        let orphaned = std::mem::take(&mut inner.orphaned);
+        let (still_read, unread): (HashSet<JobId>, HashSet<JobId>) =
+            orphaned.into_iter().partition(|build| inner.is_read(build));
+        inner.orphaned = still_read;
+        Ended {
+            reads,
+            linked,
+            unread: unread.into_iter().collect(),
+        }
+    }
+
+    /// Marks the running jobs reading a cache of `session_id`, which is being
+    /// removed, so a cache they lose from now on is not rebuilt.
+    pub(crate) fn close_session_reads(&self, session_id: &str) {
+        for job_reads in self.inner.lock().reads.values_mut() {
+            if job_reads
+                .reads
+                .iter()
+                .any(|read| read.key.session_id == session_id)
+            {
+                job_reads.session_closed = true;
+            }
+        }
+    }
+
+    /// A build in flight for a cache of `session_id`, a held one first: failing
+    /// it fails what waits on it without cancelling a running job.
+    pub(crate) fn inflight_of(&self, session_id: &str) -> Option<(JobId, CacheKey)> {
+        let inner = self.inner.lock();
+        inner
+            .inflight
+            .iter()
+            .filter(|(_, key)| key.session_id == session_id)
+            .min_by_key(|(job, _)| !inner.pending.contains_key(*job))
+            .map(|(job, key)| (job.clone(), key.clone()))
+    }
+
+    /// `builds` were dropped with their session: returns those no running job
+    /// reads, whose data can be cleaned up now, and keeps the rest until their
+    /// last reader ends.
+    pub(crate) fn orphan(&self, builds: Vec<JobId>) -> Vec<JobId> {
+        let mut inner = self.inner.lock();
+        let (read, unread): (Vec<JobId>, Vec<JobId>) =
+            builds.into_iter().partition(|build| inner.is_read(build));
+        inner.orphaned.extend(read);
+        unread
     }
 }
 
@@ -468,7 +649,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             Err(e) => return self.fail_pending(&job, &e.to_string(), sender).await,
         };
 
-        self.cache_linker.record_reads(&job.job_id, reads);
+        // Decided while every read still has its subplan: one the guard
+        // refuses is never rebuilt, so it keeps none.
+        let rebuildable: Vec<bool> = reads
+            .iter()
+            .map(|read| !shares_a_cache(&reads, read))
+            .collect();
+        for (read, rebuildable) in reads.iter_mut().zip(rebuildable) {
+            if !rebuildable {
+                read.cache = None;
+            }
+        }
+        self.cache_linker.record_reads(
+            &job.job_id,
+            JobReads {
+                queued_at: job.queued_at,
+                reads,
+                session_closed: false,
+            },
+        );
         debug!("Submitting cache job {} ({})", job.job_id, job.job_name);
         let event = QueryStageSchedulerEvent::JobQueued {
             job_id: job.job_id.clone(),
@@ -480,7 +679,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             admission: job.admission.clone(),
         };
         if let Err(e) = sender.post_event(event).await {
-            self.cache_linker.job_ended(&job.job_id);
+            let ended = self.cache_linker.job_ended(&job.job_id);
+            self.clean_up_builds(ended.unread);
             self.fail_pending(&job, &format!("failed to submit: {e}"), sender)
                 .await;
         }
@@ -525,7 +725,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         end: JobEnd<'_>,
         sender: &EventSender<QueryStageSchedulerEvent>,
     ) {
-        let (reads, linked) = self.cache_linker.job_ended(job_id);
+        let Ended {
+            reads,
+            linked,
+            unread,
+        } = self.cache_linker.job_ended(job_id);
+        self.clean_up_builds(unread);
         if let JobEnd::Failed(reason) = end
             && reason.contains(CACHE_DATA_LOST)
         {
@@ -548,8 +753,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 };
                 match self.record_materialized_cache(job_id, &key).await {
                     Ok(()) => {
-                        for job in self.cache_linker.complete(job_id) {
+                        let released = self.cache_linker.complete(job_id);
+                        for job in released.jobs {
                             self.spawn_dispatch(job, sender);
+                        }
+                        for (job, input) in released.inputs {
+                            self.provide_input(&job, input, sender).await;
                         }
                     }
                     Err(reason) => {
@@ -572,6 +781,272 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         .await;
                 }
             },
+        }
+    }
+
+    /// Drops the `DataFrame::cache()` data of `session_id`, which is being
+    /// removed. Its built caches are gone at once for new queries, and their
+    /// data is cleaned up once no running query reads it. Its builds still in
+    /// flight are cancelled, and what waits on them fails. Using the session
+    /// again builds its caches anew.
+    pub(crate) async fn remove_session_caches(
+        &self,
+        session_id: &str,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        // First, so a query reading one of these caches that loses it from now
+        // on fails rather than rebuild it for the removed session.
+        self.cache_linker.close_session_reads(session_id);
+        // A build fails with what waits on it, held builds included, so look
+        // again each time rather than walk a list taken up front.
+        //
+        // A submission on this session between claiming a build (`track`) and
+        // holding it (`register`) has its claim given back and its build job
+        // cancelled before that job is queued. The submission then submits the
+        // build anyway, whose output is cleaned up as an unclaimed job's, and
+        // its query fails with a cache-miss error asking for a retry. A narrow
+        // race, left as is.
+        while let Some((build, key)) = self.cache_linker.inflight_of(session_id) {
+            match self.cache_linker.cancel(&build) {
+                Some(held) => self.fail_pending(&held, SESSION_CLOSED, sender).await,
+                None => {
+                    self.fail_cache_job(&build, Some(&key), SESSION_CLOSED, sender)
+                        .await;
+                    let event = QueryStageSchedulerEvent::JobCancel(build.clone());
+                    if let Err(e) = sender.post_event(event).await {
+                        warn!("failed to cancel cache build {build}: {e}");
+                    }
+                }
+            }
+        }
+        let removed = self.cache_state.remove_session(session_id).await?;
+        let builds = removed
+            .into_iter()
+            .map(|(_, cache)| cache.materializing_job)
+            .collect();
+        self.clean_up_builds(self.cache_linker.orphan(builds));
+        Ok(())
+    }
+
+    /// Cleans up the data of dropped `builds`, after the usual delay for a
+    /// finished job's data.
+    fn clean_up_builds(&self, builds: Vec<JobId>) {
+        for build in builds {
+            self.executor_manager.clean_up_job_data_delayed(
+                build,
+                self.config.finished_job_data_clean_up_interval_seconds,
+            );
+        }
+    }
+
+    /// A running job lost the cache data it reads under `inputs`, and its stages
+    /// wait for it: rebuilds those caches and provides them again, or fails the
+    /// job. On its own task, off the event loop.
+    pub(crate) fn on_external_input_lost(
+        self: &Arc<Self>,
+        job_id: JobId,
+        inputs: Vec<usize>,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let state = Arc::clone(self);
+        let sender = sender.clone();
+        tokio::spawn(async move {
+            let Some(job_reads) = state.cache_linker.reads_of(&job_id) else {
+                state
+                    .fail_if_running(
+                        &job_id,
+                        "it has no record of the cache it lost",
+                        &sender,
+                    )
+                    .await;
+                return;
+            };
+            if let Err(reason) = state
+                .rebuild_lost_inputs(&job_id, &job_reads, &inputs, &sender)
+                .await
+            {
+                state
+                    .post_running_failure(&job_id, job_reads.queued_at, &reason, &sender)
+                    .await;
+            }
+        });
+    }
+
+    async fn rebuild_lost_inputs(
+        &self,
+        job_id: &JobId,
+        job_reads: &JobReads,
+        inputs: &[usize],
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> std::result::Result<(), String> {
+        if job_reads.session_closed {
+            return Err(session_closed_rebuild());
+        }
+        // Every input is checked before any build is dropped or claimed, so a
+        // job that cannot recover leaves the healthy ones as they are.
+        let mut reads = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let Some(read) = job_reads.read(*input) else {
+                return Err(format!(
+                    "external input {input} is not a cache this scheduler can rebuild"
+                ));
+            };
+            // Without a subplan the read shares a cache with another, which a
+            // rebuild could give the query in a second version.
+            let Some(cache) = &read.cache else {
+                return Err(format!(
+                    "{CACHE_DATA_LOST} that shares a cache with another of its reads, so it cannot be rebuilt mid-query; retry the query"
+                ));
+            };
+            reads.push((read, cache));
+        }
+        let Some(graph) = self.task_manager.get_active_execution_graph(job_id) else {
+            return Ok(()); // the job ended meanwhile
+        };
+        let (session_id, config) = {
+            let graph = graph.read().await;
+            (graph.session_id().to_owned(), graph.session_config())
+        };
+        // Made for the rebuild from the job's own configuration, rather than
+        // kept for the job's whole run.
+        let ctx = self
+            .session_manager
+            .new_context(&session_id, &config)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Admitted past a draining scheduler: the job it serves already was.
+        let admission = Admission::new(&self.admissions);
+        for (read, cache) in reads {
+            let input = read.input_id;
+            // Drop the lost build only if it is still the one read: another
+            // reader may already have replaced it.
+            self.invalidate_build(&read.key, &read.materializing_job)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut claims = Vec::new();
+            let alive_executors = self.executor_manager.get_alive_executors();
+            let waiting_on = match self
+                .prepare_caches(&ctx, cache, &alive_executors, &admission, &mut claims)
+                .await
+            {
+                Ok(waiting_on) => waiting_on,
+                Err(e) => {
+                    self.roll_back_claims(&claims, &e.to_string(), sender).await;
+                    return Err(e.to_string());
+                }
+            };
+            for ready in self.cache_linker.register(claims) {
+                self.submit_released(ready, sender).await;
+            }
+            // A cache node waits on at most one job: its own build.
+            let waits = waiting_on
+                .iter()
+                .next()
+                .is_some_and(|on| self.cache_linker.wait_for_input(job_id, input, on));
+            if !waits {
+                self.provide_input(job_id, input, sender).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Provides `job_id`'s lost `input` again, from its cache's current entry,
+    /// or fails the job.
+    async fn provide_input(
+        &self,
+        job_id: &JobId,
+        input: usize,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let read = self.cache_linker.reads_of(job_id).and_then(|job_reads| {
+            let read = job_reads.read(input)?.clone();
+            Some((job_reads.queued_at, job_reads.session_closed, read))
+        });
+        let Some((queued_at, session_closed, read)) = read else {
+            self.fail_if_running(job_id, "it has no record of the cache it lost", sender)
+                .await;
+            return;
+        };
+        let reason = match self.cache_state.lookup(&read.key).await {
+            // The session was removed while this rebuild ran: drop what it
+            // built rather than leave it to a session nothing will remove.
+            Ok(Some(cache)) if session_closed => {
+                if let Err(e) = self
+                    .invalidate_build(&read.key, &cache.materializing_job)
+                    .await
+                {
+                    warn!("failed to drop cache {:?}: {e:?}", read.key);
+                }
+                session_closed_rebuild()
+            }
+            Ok(Some(cache)) if cache.schema == read.written => {
+                self.cache_linker.input_rebuilt(
+                    job_id,
+                    input,
+                    cache.materializing_job.clone(),
+                );
+                let event = QueryStageSchedulerEvent::ExternalInputReady {
+                    job_id: job_id.clone(),
+                    input,
+                    locations: cache.locations,
+                    queued_at,
+                };
+                if let Err(e) = sender.post_event(event).await {
+                    error!("failed to resume job {job_id}: {e}");
+                }
+                return;
+            }
+            Ok(Some(_)) => {
+                "a cache it reads was rebuilt with a different schema".to_owned()
+            }
+            Ok(None) => {
+                "a cache it reads was lost again before it could be read".to_owned()
+            }
+            Err(e) => format!("a cache it reads could not be looked up: {e}"),
+        };
+        self.post_running_failure(job_id, queued_at, &reason, sender)
+            .await;
+    }
+
+    /// A job has no read record for cache data it lost. Usually it ended
+    /// meanwhile; if it still runs, nothing would rebuild that data, so it
+    /// fails rather than wait for it.
+    async fn fail_if_running(
+        &self,
+        job_id: &JobId,
+        reason: &str,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let Some(graph) = self.task_manager.get_active_execution_graph(job_id) else {
+            return;
+        };
+        let queued_at = match &graph.read().await.status().status {
+            Some(job_status::Status::Running(running)) => running.queued_at,
+            _ => return,
+        };
+        self.post_running_failure(job_id, queued_at, reason, sender)
+            .await;
+    }
+
+    /// Fails a running job whose lost cache cannot be provided again.
+    async fn post_running_failure(
+        &self,
+        job_id: &JobId,
+        queued_at: u64,
+        reason: &str,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) {
+        warn!("Job {job_id} could not recover a cache it reads: {reason}");
+        let event = QueryStageSchedulerEvent::JobRunningFailed {
+            job_id: job_id.clone(),
+            fail_message: format!(
+                "Job {job_id} could not recover a cache it reads: {reason}"
+            ),
+            queued_at,
+            failed_at: timestamp_millis(),
+        };
+        if let Err(e) = sender.post_event(event).await {
+            error!("failed to report job {job_id} as failed: {e}");
         }
     }
 
@@ -622,13 +1097,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             self.release_claim(key, job_id).await;
         }
         let reason = format!("a cache this query reads could not be built: {reason}");
-        for victim in self.cache_linker.fail(job_id) {
+        let released = self.cache_linker.fail(job_id);
+        for victim in released.jobs {
             match &victim.kind {
                 // Its own dependents were failed with it.
                 PendingKind::Materialize { key } => {
                     self.release_claim(key, &victim.job_id).await
                 }
                 PendingKind::Read => self.fail_held_read(&victim, &reason, sender).await,
+            }
+        }
+        // A job fails once, however many of its lost reads waited here.
+        let jobs: HashSet<JobId> =
+            released.inputs.into_iter().map(|(job, _)| job).collect();
+        for job in jobs {
+            if let Some(job_reads) = self.cache_linker.reads_of(&job) {
+                self.post_running_failure(&job, job_reads.queued_at, &reason, sender)
+                    .await;
             }
         }
     }
@@ -705,9 +1190,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
-    /// Drops `key`'s entry while it is still `materializing_job`'s, and cleans up
-    /// that build's data after the usual delay for a finished job's data, which
-    /// lets a job still reading it finish.
+    /// Drops `key`'s entry while it is still `materializing_job`'s. That build's
+    /// data is cleaned up once no running job reads it, after the usual delay
+    /// for a finished job's data. A job that looked the entry up but records
+    /// its reads only after this is not counted; if it outlives the delay it
+    /// loses the data, and recovers or fails cleanly as for any lost cache.
     async fn invalidate_build(
         &self,
         key: &CacheKey,
@@ -719,10 +1206,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .await?
             .is_some()
         {
-            self.executor_manager.clean_up_job_data_delayed(
-                materializing_job.clone(),
-                self.config.finished_job_data_clean_up_interval_seconds,
-            );
+            let unread = self.cache_linker.orphan(vec![materializing_job.clone()]);
+            self.clean_up_builds(unread);
         }
         Ok(())
     }
@@ -732,6 +1217,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             warn!("failed to release cache claim of job {job_id}: {e:?}");
         }
     }
+}
+
+/// Whether `read` shares a cache with another of the job's `reads`: the same
+/// one, one built from the other, or two built from a common one. A rebuild
+/// of `read` may rebuild any cache it depends on, which the other read would
+/// then have read in another version.
+fn shares_a_cache(reads: &[ResolvedRead], read: &ResolvedRead) -> bool {
+    let depends_on = read.depends_on();
+    reads
+        .iter()
+        .filter(|other| other.input_id != read.input_id)
+        .any(|other| !other.depends_on().is_disjoint(&depends_on))
 }
 
 /// Tells a held job's subscriber, if any, that it failed.
@@ -765,38 +1262,25 @@ mod tests {
     //! that blocked on its materialize jobs would hang inside `submit`.
 
     use super::*;
-    use crate::cache::CACHE_DATA_LOST;
+    use crate::cache::{CACHE_DATA_LOST, EXTERNAL_STAGE_ID_BASE};
     use crate::config::SchedulerConfig;
-    use crate::scheduler_server::timestamp_millis;
     use crate::state::cache_registry::MaterializedCache;
     use crate::test_utils::{
         MetricEvent, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
+        aggregation_logical_plan, execution_failure, failed_statuses,
+        failing_task_runner, fetch_partition_failure, test_cluster_context,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::BallistaCacheNode;
+    use ballista_core::serde::protobuf::MultiTaskDefinition;
     use ballista_core::serde::protobuf::job_status::Status;
-    use ballista_core::serde::protobuf::{
-        ExecutionError, FailedTask, FetchPartitionError, MultiTaskDefinition, TaskId,
-        TaskStatus, failed_task, task_status,
-    };
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{Extension, LogicalPlanBuilder, col};
-    use datafusion::test_util::scan_empty_with_partitions;
-    use std::time::Duration;
 
-    fn scan() -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap()
-    }
+    use ballista_core::serde::BallistaCodec;
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::logical_expr::{Extension, LogicalPlanBuilder};
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+
+    use std::time::Duration;
 
     fn cache_over(cache_id: &str, input: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Extension(Extension {
@@ -891,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn explain_does_not_materialize() {
         let (mut test, metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         let key = CacheKey::new("session", "c1");
 
         // Cold: only the EXPLAIN job runs, and nothing is claimed.
@@ -925,7 +1409,7 @@ mod tests {
     async fn disabled_cache_runs_the_query_uncached() {
         let config = SchedulerConfig::default().with_disable_dataframe_cache(true);
         let (mut test, metrics) = scheduler_test_with(config, None).await;
-        let plan = cache_over("outer", cache_over("inner", scan()));
+        let plan = cache_over("outer", cache_over("inner", aggregation_logical_plan(2)));
 
         let job = test.submit("query", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &job).await));
@@ -949,7 +1433,7 @@ mod tests {
     async fn a_cache_is_built_once_then_read(#[values(false, true)] adaptive: bool) {
         let (mut test, metrics) = scheduler_test(None).await;
         test.set_adaptive_planner(adaptive);
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let read = test.submit("query", &plan).await.unwrap();
         assert!(
@@ -978,7 +1462,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_queries_share_one_build() {
         let (mut test, metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let first = test.submit("first", &plan).await.unwrap();
         let second = test.submit("second", &plan).await.unwrap();
@@ -989,36 +1473,7 @@ mod tests {
     }
 
     fn failing_runner() -> Arc<dyn crate::test_utils::TaskRunner> {
-        Arc::new(TaskRunnerFn::new(
-            |_executor: String, task: MultiTaskDefinition| {
-                task.task_ids
-                    .into_iter()
-                    .map(|TaskId { task_id, .. }| {
-                        let now = timestamp_millis();
-                        TaskStatus {
-                            task_id,
-                            job_id: task.job_id.clone(),
-                            stage_id: task.stage_id,
-                            stage_attempt_num: task.stage_attempt_num,
-                            launch_time: now,
-                            start_exec_time: now,
-                            end_exec_time: now,
-                            metrics: vec![],
-                            status: Some(task_status::Status::Failed(FailedTask {
-                                error: "boom".to_owned(),
-                                retryable: false,
-                                count_to_failures: false,
-                                failed_reason: Some(
-                                    failed_task::FailedReason::ExecutionError(
-                                        ExecutionError {},
-                                    ),
-                                ),
-                            })),
-                        }
-                    })
-                    .collect()
-            },
-        ))
+        failing_task_runner(|_| execution_failure("boom"))
     }
 
     /// If a cache cannot be built, the cache built on it and the read job fail
@@ -1026,7 +1481,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_build_fails_what_waits_on_it_and_frees_the_keys() {
         let (mut test, _metrics) = scheduler_test(Some(failing_runner())).await;
-        let plan = cache_over("outer", cache_over("inner", scan()));
+        let plan = cache_over("outer", cache_over("inner", aggregation_logical_plan(2)));
 
         let read = test.submit("query", &plan).await.unwrap();
         let status = finish(&mut test, &read).await;
@@ -1051,7 +1506,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_waiting_read_job_fails_it() {
         let (mut test, metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let read = test.submit("query", &plan).await.unwrap();
         test.cancel(&read).await.unwrap();
@@ -1097,29 +1552,49 @@ mod tests {
         assert!(running, "job {job} did not start");
     }
 
-    /// An executor holding the cache's data is lost while the read job runs: the
-    /// job fails naming the loss, and a retry rebuilds the cache elsewhere.
+    /// An executor holding the cache's data is lost while the read job runs
+    /// under the adaptive planner, which cannot resume a rolled-back stage: the
+    /// job fails naming the loss, and nothing stays admitted.
     #[tokio::test]
-    async fn losing_an_executor_with_cache_data_fails_the_query() {
+    async fn losing_an_executor_mid_read_fails_an_adaptive_query() {
         let (mut test, _metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        test.set_adaptive_planner(true);
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         let read = test.submit("query", &plan).await.unwrap();
         let entry = build(&mut test, "c1").await;
         wait_until_running(&test, &read).await;
-        let holder = holder_of(&entry);
-        test.lose_executor(&holder).await.unwrap();
+        test.lose_executor(&holder_of(&entry)).await.unwrap();
 
         let error = failure(&finish(&mut test, &read).await);
         assert!(error.contains(CACHE_DATA_LOST), "{error}");
+        assert_eq!(test.active_job_number(), 0, "nothing stays admitted");
+    }
 
-        let retry = test.submit("retry", &plan).await.unwrap();
-        assert!(is_successful(&finish(&mut test, &retry).await));
-        let rebuilt = test
-            .cache_state()
-            .lookup(&CacheKey::new("session", "c1"))
-            .await
-            .unwrap()
-            .unwrap();
+    /// Two running jobs lose the cache they read, with the executor holding it:
+    /// one rebuild elsewhere serves both, both succeed, and nothing stays
+    /// admitted.
+    #[tokio::test]
+    async fn two_readers_losing_one_cache_share_the_rebuild() {
+        let (mut test, metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let warm = test.submit("warm", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &warm).await));
+        let key = CacheKey::new("session", "c1");
+        let entry = test.cache_state().lookup(&key).await.unwrap().unwrap();
+
+        let first = test.submit("first", &plan).await.unwrap();
+        let second = test.submit("second", &plan).await.unwrap();
+        wait_until_running(&test, &first).await;
+        wait_until_running(&test, &second).await;
+        let holder = holder_of(&entry);
+        test.lose_executor(&holder).await.unwrap();
+
+        assert!(is_successful(&finish(&mut test, &first).await));
+        assert!(is_successful(&finish(&mut test, &second).await));
+        // The first build and read, one rebuild, and the two reads.
+        assert_eq!(completed_jobs(&metrics), 5);
+        let rebuilt = test.cache_state().lookup(&key).await.unwrap().unwrap();
+        assert_ne!(rebuilt.materializing_job, entry.materializing_job);
         assert!(
             rebuilt
                 .locations
@@ -1127,6 +1602,258 @@ mod tests {
                 .flatten()
                 .all(|loc| loc.executor_meta.id != holder)
         );
+        assert_eq!(test.active_job_number(), 0, "nothing stays admitted");
+    }
+
+    /// A job whose lost cache shares a cache with another of its reads (here the
+    /// same cache twice, or one built from the other) fails cleanly rather than
+    /// read two versions of it.
+    #[rstest::rstest]
+    #[case::twice(
+        union(
+            cache_over("c1", aggregation_logical_plan(2)),
+            cache_over("c1", aggregation_logical_plan(2))
+        ),
+        "c1"
+    )]
+    #[case::through_another_cache(
+        union(
+            cache_over("c1", aggregation_logical_plan(2)),
+            cache_over("c2", cache_over("c1", aggregation_logical_plan(2)))
+        ),
+        "c2"
+    )]
+    #[tokio::test]
+    async fn a_cache_shared_with_another_read_is_not_rebuilt_mid_query(
+        #[case] plan: LogicalPlan,
+        #[case] last_built: &str,
+    ) {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let read = test.submit("query", &plan).await.unwrap();
+        build(&mut test, last_built).await;
+        wait_until_running(&test, &read).await;
+        let c1 = test
+            .cache_state()
+            .lookup(&CacheKey::new("session", "c1"))
+            .await
+            .unwrap()
+            .unwrap();
+        test.lose_executor(&holder_of(&c1)).await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains("shares a cache"), "{error}");
+    }
+
+    /// A lost read is rebuilt mid-query only if it shares no cache with another
+    /// read of the job, as its rebuild may rebuild any cache it depends on.
+    #[rstest::rstest]
+    #[case::once(vec![cache_over("c1", aggregation_logical_plan(2))], vec![false])]
+    #[case::unrelated(vec![cache_over("c1", aggregation_logical_plan(2)), cache_over("c2", aggregation_logical_plan(2))], vec![false, false])]
+    #[case::built_from_one_not_read(vec![cache_over("c2", cache_over("c1", aggregation_logical_plan(2)))], vec![false])]
+    #[case::twice(vec![cache_over("c1", aggregation_logical_plan(2)), cache_over("c1", aggregation_logical_plan(2))], vec![true, true])]
+    #[case::one_built_from_the_other(
+        vec![cache_over("c1", aggregation_logical_plan(2)), cache_over("c2", cache_over("c1", aggregation_logical_plan(2)))],
+        vec![true, true]
+    )]
+    #[case::built_from_a_common_one(
+        vec![cache_over("c2", cache_over("c1", aggregation_logical_plan(2))), cache_over("c3", cache_over("c1", aggregation_logical_plan(2)))],
+        vec![true, true]
+    )]
+    #[case::nested_and_its_innermost(
+        vec![cache_over("c3", cache_over("c2", cache_over("c1", aggregation_logical_plan(2)))), cache_over("c1", aggregation_logical_plan(2))],
+        vec![true, true]
+    )]
+    fn a_lost_read_is_rebuilt_only_if_it_shares_no_cache(
+        #[case] caches: Vec<LogicalPlan>,
+        #[case] shared: Vec<bool>,
+    ) {
+        let reads: Vec<ResolvedRead> = caches
+            .into_iter()
+            .enumerate()
+            .map(|(n, cache)| {
+                let node = cache_node(&cache).unwrap();
+                ResolvedRead {
+                    key: CacheKey::new(node.session_id(), node.cache_id()),
+                    materializing_job: JobId::new("build"),
+                    input_id: EXTERNAL_STAGE_ID_BASE + n,
+                    written: Arc::new(Schema::empty()),
+                    cache: Some(cache),
+                }
+            })
+            .collect();
+        let actual: Vec<bool> = reads
+            .iter()
+            .map(|read| shares_a_cache(&reads, read))
+            .collect();
+        assert_eq!(actual, shared);
+    }
+
+    /// A build dropped with its session is cleaned up at once if no running job
+    /// reads it, and otherwise once the last job reading it ends.
+    #[test]
+    fn a_build_dropped_with_its_session_is_freed_once_unread() {
+        let linker = CacheLinker::default();
+        let read = ResolvedRead {
+            key: CacheKey::new("session", "c1"),
+            materializing_job: JobId::new("read-build"),
+            input_id: EXTERNAL_STAGE_ID_BASE,
+            cache: None,
+            written: Arc::new(Schema::empty()),
+        };
+        let reader = JobId::new("reader");
+        linker.record_reads(
+            &reader,
+            JobReads {
+                queued_at: 0,
+                reads: vec![read],
+                session_closed: false,
+            },
+        );
+
+        let unread =
+            linker.orphan(vec![JobId::new("read-build"), JobId::new("unread-build")]);
+        assert_eq!(unread, vec![JobId::new("unread-build")]);
+        assert!(
+            linker.job_ended(&JobId::new("other")).unread.is_empty(),
+            "still read"
+        );
+        assert_eq!(
+            linker.job_ended(&reader).unread,
+            vec![JobId::new("read-build")]
+        );
+    }
+
+    /// Dropping a cache while a job reads it keeps the build's data until that
+    /// job ends: the entry is gone at once, but the build is orphaned rather
+    /// than cleaned up under its reader.
+    #[tokio::test]
+    async fn a_dropped_cache_keeps_its_data_while_a_job_reads_it() {
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_default_scheduler_endpoint(
+                test_cluster_context(),
+                BallistaCodec::default(),
+            );
+        let key = CacheKey::new("session", "c1");
+        let build = JobId::new("build");
+        state
+            .cache_state
+            .begin_materialization(key.clone(), build.clone())
+            .await
+            .unwrap();
+        state
+            .cache_state
+            .complete_materialization(
+                key.clone(),
+                build.clone(),
+                Arc::new(Schema::empty()),
+                vec![],
+            )
+            .await
+            .unwrap();
+        let reader = JobId::new("reader");
+        let read = ResolvedRead {
+            key: key.clone(),
+            materializing_job: build.clone(),
+            input_id: EXTERNAL_STAGE_ID_BASE,
+            cache: None,
+            written: Arc::new(Schema::empty()),
+        };
+        state.cache_linker.record_reads(
+            &reader,
+            JobReads {
+                queued_at: 0,
+                reads: vec![read],
+                session_closed: false,
+            },
+        );
+
+        state.invalidate_build(&key, &build).await.unwrap();
+
+        assert!(state.cache_state.lookup(&key).await.unwrap().is_none());
+        assert!(
+            state.cache_linker.inner.lock().orphaned.contains(&build),
+            "its data is kept for the reader"
+        );
+        assert_eq!(state.cache_linker.job_ended(&reader).unread, vec![build]);
+    }
+
+    /// Removing a session while its cache is being built cancels the build, and
+    /// the query waiting on it fails naming the closed session.
+    #[tokio::test]
+    async fn removing_a_session_fails_queries_waiting_on_its_builds() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let read = test.submit("query", &plan).await.unwrap();
+
+        test.remove_session("session").await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains("its session was closed"), "{error}");
+        let key = CacheKey::new("session", "c1");
+        assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
+    }
+
+    /// Removing a session while its nested caches are being built: `c1`'s build
+    /// runs, and `c2`'s is held for it. Both are given up, the query waiting on
+    /// them fails naming the closed session, and neither cache is left.
+    #[tokio::test]
+    async fn removing_a_session_fails_queries_waiting_on_nested_builds() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c2", cache_over("c1", aggregation_logical_plan(2)));
+        let read = test.submit("query", &plan).await.unwrap();
+
+        test.remove_session("session").await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains("its session was closed"), "{error}");
+        for cache_id in ["c1", "c2"] {
+            let key = CacheKey::new("session", cache_id);
+            assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
+        }
+    }
+
+    /// Removing a session drops its built caches, but a query already reading
+    /// one finishes, and using the session again builds the cache anew.
+    #[tokio::test]
+    async fn removing_a_session_spares_running_reads_and_rebuilds_on_reuse() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let key = CacheKey::new("session", "c1");
+        let read = test.submit("query", &plan).await.unwrap();
+        let entry = build(&mut test, "c1").await;
+        wait_until_running(&test, &read).await;
+
+        test.remove_session("session").await.unwrap();
+        assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
+        assert!(is_successful(&finish(&mut test, &read).await));
+
+        let again = test.submit("again", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &again).await));
+        let rebuilt = test.cache_state().lookup(&key).await.unwrap().unwrap();
+        assert_ne!(rebuilt.materializing_job, entry.materializing_job);
+    }
+
+    /// A query reading a cache when its session is removed, which then loses
+    /// that cache, fails rather than rebuild it: nothing would remove an entry
+    /// made for the removed session. A retry on the session rebuilds as usual.
+    #[tokio::test]
+    async fn removing_a_session_fails_a_later_rebuild_for_its_running_reads() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let read = test.submit("query", &plan).await.unwrap();
+        let entry = build(&mut test, "c1").await;
+        wait_until_running(&test, &read).await;
+
+        test.remove_session("session").await.unwrap();
+        test.lose_executor(&holder_of(&entry)).await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(
+            error.contains(CACHE_DATA_LOST) && error.contains("session was closed"),
+            "{error}"
+        );
+        let key = CacheKey::new("session", "c1");
+        assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
     }
 
     /// Ticks until `cache_id`'s entry is recorded, without ticking past it: one
@@ -1165,7 +1892,7 @@ mod tests {
         let (mut test, metrics) = scheduler_test(None).await;
         test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
             .unwrap();
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
 
         let read = test.submit("query", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &read).await));
@@ -1187,7 +1914,7 @@ mod tests {
     #[tokio::test]
     async fn losing_an_executor_with_cache_data_fails_a_pipelined_query() {
         let (mut test, _metrics) = scheduler_test(None).await;
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         // Built under the default (staged) mode, so the build can be
         // stepped while the read job is held.
         let read = test.submit("query", &plan).await.unwrap();
@@ -1198,6 +1925,16 @@ mod tests {
             .unwrap();
         let read = test.submit("pipelined", &plan).await.unwrap();
         wait_until_running(&test, &read).await;
+        // Placed, so the loss lands once its tasks are bound: before that, the
+        // job would wait for the cache to be rebuilt instead of failing.
+        let placed = crate::test_utils::await_condition(
+            Duration::from_millis(20),
+            100,
+            || async { Ok(test.is_pipelined_placed(&read).await) },
+        )
+        .await
+        .unwrap();
+        assert!(placed, "the pipelined job is placed");
         let holder = holder_of(&entry);
         test.lose_executor(&holder).await.unwrap();
 
@@ -1231,44 +1968,20 @@ mod tests {
                 let Some(location) = lost.lock().unwrap().clone() else {
                     return succeed.run(executor, task);
                 };
-                let now = timestamp_millis();
-                task.task_ids
-                    .into_iter()
-                    .map(|TaskId { task_id, .. }| TaskStatus {
-                        task_id,
-                        job_id: task.job_id.clone(),
-                        stage_id: task.stage_id,
-                        stage_attempt_num: task.stage_attempt_num,
-                        launch_time: now,
-                        start_exec_time: now,
-                        end_exec_time: now,
-                        metrics: vec![],
-                        status: Some(task_status::Status::Failed(FailedTask {
-                            error: "fetch failed".to_owned(),
-                            retryable: false,
-                            count_to_failures: false,
-                            failed_reason: Some(
-                                failed_task::FailedReason::FetchPartitionError(
-                                    FetchPartitionError {
-                                        executor_id: location.executor_meta.id.clone(),
-                                        map_stage_id: location.partition_id.stage_id
-                                            as u32,
-                                        map_partition_id: location
-                                            .partition_id
-                                            .partition_id
-                                            as u32,
-                                    },
-                                ),
-                            ),
-                        })),
-                    })
-                    .collect()
+                failed_statuses(
+                    task,
+                    fetch_partition_failure(
+                        &location.executor_meta.id,
+                        location.partition_id.stage_id as u32,
+                        location.partition_id.partition_id as u32,
+                    ),
+                )
             })
         };
         let (mut test, _metrics) = scheduler_test(Some(Arc::new(runner))).await;
         test.set_session_option(BALLISTA_EXECUTION_MODE, "pipelined")
             .unwrap();
-        let plan = cache_over("c1", scan());
+        let plan = cache_over("c1", aggregation_logical_plan(2));
         let read = test.submit("query", &plan).await.unwrap();
         assert!(is_successful(&finish(&mut test, &read).await));
         let key = CacheKey::new("session", "c1");
@@ -1293,7 +2006,7 @@ mod tests {
     async fn a_cache_gone_stale_while_held_is_rebuilt_before_release() {
         let (mut test, metrics) = scheduler_test(None).await;
         let warm = test
-            .submit("warm", &cache_over("c1", scan()))
+            .submit("warm", &cache_over("c1", aggregation_logical_plan(2)))
             .await
             .unwrap();
         assert!(is_successful(&finish(&mut test, &warm).await));
@@ -1310,7 +2023,10 @@ mod tests {
         let query = test
             .submit(
                 "query",
-                &union(cache_over("c1", scan()), cache_over("c2", scan())),
+                &union(
+                    cache_over("c1", aggregation_logical_plan(2)),
+                    cache_over("c2", aggregation_logical_plan(2)),
+                ),
             )
             .await
             .unwrap();
@@ -1348,7 +2064,10 @@ mod tests {
         let generator = Arc::new(StallingIds::default());
         let config = SchedulerConfig::default().with_job_id_generator(generator.clone());
         let (mut test, _metrics) = scheduler_test_with(config, None).await;
-        let plan = union(cache_over("c1", scan()), cache_over("c2", scan()));
+        let plan = union(
+            cache_over("c1", aggregation_logical_plan(2)),
+            cache_over("c2", aggregation_logical_plan(2)),
+        );
 
         let dropped = test.submit("dropped", &plan);
         let _ = tokio::time::timeout(Duration::from_millis(300), dropped).await;

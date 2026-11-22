@@ -20,7 +20,14 @@
 # Jupyter Notebooks
 
 Ballista works well in Jupyter notebooks. DataFrames automatically render as formatted
-HTML tables when displayed in a notebook cell.
+HTML tables when displayed in a notebook cell, and the `ballista.jupyter` extension
+adds SQL magic commands, plan visualization and progress reporting.
+
+Install the Jupyter extras with:
+
+```bash
+pip install "ballista[jupyter]"
+```
 
 ## Basic Usage
 
@@ -86,6 +93,99 @@ pandas_df = df.to_pandas()
 pandas_df.plot(kind='bar', x='name', y='total_spent')
 plt.show()
 ```
+
+## SQL Magic Commands
+
+Load the extension and connect to a cluster:
+
+```python
+%load_ext ballista.jupyter
+
+%ballista connect df://localhost:50050
+```
+
+The magic commands use their own `SessionContext`, created by `%ballista connect`.
+Tables registered on a context created with `BallistaSessionContext` are not visible to
+them, register tables with `%register` instead. The scheduler is only contacted when a
+query runs, so `%ballista connect` does not check that the cluster is reachable.
+
+| Command                             | Description                                        |
+| ----------------------------------- | -------------------------------------------------- |
+| `%ballista connect <url>`           | Connect to a cluster, `df://` is added if missing  |
+| `%ballista disconnect`              | Drop the connection                                |
+| `%ballista status`                  | Show the address, session id and query count       |
+| `%ballista tables`                  | List registered tables by schema                   |
+| `%ballista schema <table>`          | Show the columns of a table                        |
+| `%ballista history`                 | Show the last 10 queries with their planning time  |
+| `%register <format> <table> <path>` | Register a `parquet`, `csv`, `json` or `avro` file |
+| `%sql <query>`                      | Run a single-line query                            |
+| `%%sql [var]`                       | Run the cell as a query, store the result in `var` |
+
+```python
+%register parquet orders /data/orders.parquet
+
+%sql SELECT COUNT(*) FROM orders
+```
+
+```python
+%%sql top_customers
+SELECT customer_id, SUM(amount) AS total
+FROM orders
+GROUP BY customer_id
+ORDER BY total DESC
+LIMIT 10
+```
+
+`%sql` and `%%sql` return a `datafusion.DataFrame`, which renders as a table. The most
+recent result is also available as `_last_result`.
+
+## Visualizing Query Plans
+
+`explain_visual` renders the logical plan of a DataFrame as a graph, without running
+the query:
+
+```python
+from ballista.jupyter import explain_visual
+
+df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
+explain_visual(df)
+
+# save as SVG, or as Graphviz DOT
+explain_visual(df).save("plan.svg")
+explain_visual(df).save("plan.dot")
+```
+
+The SVG is rendered with the Graphviz `dot` command, for example installed with
+`brew install graphviz` or `apt install graphviz`. Without it, the plan is shown as
+text. For runtime metrics use `df.explain(analyze=True)`, which runs the query on the
+cluster.
+
+## Progress Reporting
+
+`collect_with_progress` collects a DataFrame and shows the elapsed time while the query
+runs:
+
+```python
+from ballista.jupyter import collect_with_progress
+
+batches = collect_with_progress(df)
+```
+
+Outside Jupyter, or to handle progress yourself, pass a callback. `progress` is `-1.0`
+while the query runs and `1.0` when it completes:
+
+```python
+def on_progress(status: str, progress: float):
+    print(status)
+
+batches = collect_with_progress(df, callback=on_progress, poll_interval=1.0)
+```
+
+## Example Notebooks
+
+The [`python/examples`](https://github.com/apache/datafusion-ballista/tree/main/python/examples)
+directory contains notebooks for getting started, the DataFrame API and distributed
+queries.
 
 ## Running a Local Cluster in a Notebook
 

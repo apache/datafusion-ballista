@@ -625,14 +625,15 @@ async fn stage_losing_input_after_partial_success_is_recovered() {
 /// As in Scenario E, the kill lands after the data is written and before the
 /// stage reading it starts, with a 60s executor timeout so the scheduler still
 /// lists the dead executor: the query hits the cache, and its read must fail.
-/// The read job cannot re-run another job's output, so it must fail with a clear
-/// error instead of hanging, under both planners; the cache is dropped, so the
-/// next query rebuilds it and returns the baseline result.
+/// Under the static planner the job rebuilds the cache and returns the
+/// baseline result. The adaptive planner cannot resume a rolled-back stage, so
+/// there the query must fail with a clear error instead of hanging, and the
+/// next query rebuilds the cache and returns the baseline result.
 #[rstest]
 #[case::aqe_off(false)]
 #[case::aqe_on(true)]
 #[tokio::test]
-async fn executor_holding_a_cache_killed_before_it_is_read_fails_cleanly(
+async fn executor_holding_a_cache_killed_before_it_is_read_is_recovered(
     #[case] aqe: bool,
 ) {
     let mut run = ChaosRun::start_with(aqe, 2, 60).await;
@@ -706,19 +707,22 @@ async fn executor_holding_a_cache_killed_before_it_is_read_fails_cleanly(
             )
         }
     };
-    let err = result.expect_err("losing the cache's data must fail the query");
-    assert!(
-        err.to_string().contains("lost DataFrame::cache() data"),
-        "failure should name the lost cache data, got: {err}"
-    );
-
-    let batches = timeout(Duration::from_secs(120), over_cache())
-        .await
-        .expect("the retry must not hang")
-        .expect("the retry must rebuild the cache");
+    let batches = if aqe {
+        let err = result.expect_err("the adaptive planner must fail the query");
+        assert!(
+            err.to_string().contains("lost DataFrame::cache() data"),
+            "failure should name the lost cache data, got: {err}"
+        );
+        timeout(Duration::from_secs(120), over_cache())
+            .await
+            .expect("the retry must not hang")
+            .expect("the retry must rebuild the cache")
+    } else {
+        result.expect("the static planner must rebuild the cache and finish")
+    };
     assert_eq!(
         pretty_format_batches(&batches).unwrap().to_string(),
         expected,
-        "the retry must return the baseline result"
+        "the query must return the baseline result"
     );
 }

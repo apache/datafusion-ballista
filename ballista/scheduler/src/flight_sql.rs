@@ -52,7 +52,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
     }
 
     async fn close_session(&self, session_id: &str) -> Result<()> {
-        self.state.session_manager.remove_session(session_id).await
+        self.remove_session_and_caches(session_id).await
     }
 
     async fn execute(
@@ -152,10 +152,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_job_execution_graph(job_id)
             .await?;
         let final_stage_schema = graph.and_then(|graph| {
+            let stage_id = graph.final_stage_ids().into_iter().next()?;
             graph
                 .stages()
-                .values()
-                .find(|stage| stage.output_links().is_empty())
+                .get(&stage_id)
                 .map(|stage| stage.plan().schema())
         });
 

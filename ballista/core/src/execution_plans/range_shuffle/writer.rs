@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -42,7 +43,7 @@ use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::execution_plans::shuffle_writer::{
     ColumnStatsCollector, ShuffleWriteMetrics, WriterState,
-    collect_window_state_operators, handoff_stream, run_coordinator, take_handoff,
+    collect_window_state_operators, handoff_stream, run_coordinator,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
 use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
@@ -183,10 +184,7 @@ impl RangeShuffleWriterExec {
             task_id: 0,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            state: Arc::new(Mutex::new(WriterState {
-                initialized: false,
-                handoffs: (0..output_partition_count).map(|_| None).collect(),
-            })),
+            state: Arc::new(Mutex::new(WriterState::new(output_partition_count))),
             column_stats: ColumnStatsCollector::default(),
         })
     }
@@ -309,8 +307,8 @@ impl RangeShuffleWriterExec {
 
                 debug!("Writing range shuffle results to {path:?}");
 
-                let stream =
-                    column_stats.count(plan.execute(global_partition, context.clone())?);
+                let stream = column_stats
+                    .count(plan.execute(global_partition, context.clone())?, None);
                 let index_schema = index_schema.clone();
                 let ordering = self.ordering.clone();
                 handles.spawn(async move {
@@ -454,35 +452,32 @@ impl ExecutionPlan for RangeShuffleWriterExec {
     /// The first call initializes K oneshot channels and spawns one
     /// coordinator that drives every output partition's write, sending each
     /// summary to its matching partition's oneshot. Callers should spawn all K
-    /// `execute(N, ctx)` calls concurrently so the drains don't serialize.
+    /// `execute(N, ctx)` calls concurrently so the drains don't serialize. If
+    /// every stream returned so far is dropped before its summaries arrive,
+    /// the coordinator stops, and the streams of later calls fail.
     fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let mut guard = self.state.lock().map_err(|_| {
-            DataFusionError::Internal(
-                "RangeShuffleWriterExec state mutex poisoned".to_owned(),
-            )
-        })?;
-        let state = &mut *guard;
-        let rx = take_handoff(
-            "RangeShuffleWriterExec",
-            &mut state.initialized,
-            &mut state.handoffs,
-            partition,
-            |senders| {
+        let handoff = self
+            .state
+            .lock()
+            .map_err(|_| {
+                DataFusionError::Internal(
+                    "RangeShuffleWriterExec state mutex poisoned".to_owned(),
+                )
+            })?
+            .take_handoff("RangeShuffleWriterExec", partition, |senders| {
                 let writer = self.clone();
-                tokio::spawn(async move {
+                SpawnedTask::spawn(async move {
                     run_coordinator(writer.execute_shuffle_write(context), senders).await;
-                });
-            },
-        )?;
-        drop(guard);
+                })
+            })?;
 
         Ok(handoff_stream(
             "RangeShuffleWriterExec",
-            rx,
+            handoff,
             self.work_dir.clone(),
             self.job_id.clone(),
             self.stage_id,
@@ -541,36 +536,16 @@ mod tests {
     use super::super::ipc_file::read_file_layout;
     use super::*;
     use crate::execution_plans::shuffle_reader::fetch_partition_local;
-    use crate::serde::scheduler::{
-        ExecutorMetadata, ExecutorOperatingSystemSpecification, ExecutorSpecification,
-        PartitionId, PartitionLocation, PartitionStats,
-    };
+    use crate::execution_plans::test_util::{key_payload_batch, test_location};
+    use crate::serde::scheduler::PartitionLocation;
     use crate::utils::collect_stream;
-    use datafusion::arrow::array::{Int32Array, RecordBatch, StringArray};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::array::Int32Array;
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
-
-    fn test_batch(keys: &[i32]) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("k", DataType::Int32, false),
-            Field::new("payload", DataType::Utf8, false),
-        ]));
-        let payload: Vec<String> = keys.iter().map(|k| format!("row-{k}")).collect();
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int32Array::from(keys.to_vec())),
-                Arc::new(StringArray::from(payload)),
-            ],
-        )
-        .unwrap()
-    }
 
     fn key_ordering() -> LexOrdering {
         LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
@@ -584,35 +559,19 @@ mod tests {
     /// unordered child is refused at construction.
     fn input_plan() -> Arc<dyn ExecutionPlan> {
         let partitions = vec![
-            vec![test_batch(&[1, 2]), test_batch(&[3, 4])],
-            vec![test_batch(&[5, 6]), test_batch(&[7, 8])],
+            vec![key_payload_batch(&[1, 2]), key_payload_batch(&[3, 4])],
+            vec![key_payload_batch(&[5, 6]), key_payload_batch(&[7, 8])],
         ];
         let schema = partitions[0][0].schema();
-        let source = Arc::new(DataSourceExec::new(Arc::new(
-            MemorySourceConfig::try_new(&partitions, schema, None).unwrap(),
-        )));
+        let source = MemorySourceConfig::try_new_exec(&partitions, schema, None).unwrap();
         Arc::new(SortExec::new(key_ordering(), source).with_preserve_partitioning(true))
     }
 
     fn location(job: &str, stage_id: usize, partition: usize) -> PartitionLocation {
         PartitionLocation {
             map_partition_id: partition,
-            partition_id: PartitionId {
-                job_id: job.into(),
-                stage_id,
-                partition_id: partition,
-            },
-            executor_meta: ExecutorMetadata {
-                id: "test-executor".to_string(),
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                grpc_port: 0,
-                specification: ExecutorSpecification::default(),
-                os_info: ExecutorOperatingSystemSpecification::default(),
-            },
-            partition_stats: PartitionStats::default(),
             file_id: Some(0),
-            is_sort_shuffle: false,
+            ..test_location(job, stage_id, partition)
         }
     }
 

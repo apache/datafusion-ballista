@@ -16,11 +16,12 @@
 // under the License.
 
 use crate::state::aqe::execution_plan::ExchangeExec;
+use ballista_core::config::BallistaConfig;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::JoinType;
 use datafusion::common::ScalarValue;
 use datafusion::common::stats::Precision;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::Transformed;
 use datafusion::config::ConfigOptions;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{Column, Literal};
@@ -39,6 +40,9 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
+use datafusion::physical_plan::{
+    ChildSatisfactionOptions, replace_children_if_necessary,
+};
 use std::sync::Arc;
 
 macro_rules! is_empty_exec {
@@ -230,14 +234,74 @@ impl PropagateEmptyExecRule {
             Ok(Transformed::no(plan))
         }
     }
+
+    /// Rewrites `plan` bottom-up with [`Self::transform`], except below a
+    /// parent that [`Self::transform`] keeps: there a child whose rewrite no
+    /// longer satisfies the parent's required input distribution stays as it
+    /// was, without the rewrites inside it.
+    ///
+    /// [`EmptyExec`] reports `UnknownPartitioning`, so it does not satisfy a
+    /// hash distribution that the exchange it replaced did. Under a parent
+    /// that requires one, such as a partitioned join or a window,
+    /// `EnsureRequirements` would add a hash repartition over the
+    /// [`EmptyExec`], and `DistributedExchangeRule` would turn that into a new
+    /// stage on every replan.
+    fn propagate(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let originals: Vec<_> = plan.children().into_iter().cloned().collect();
+        if originals.is_empty() {
+            return Ok(Self::transform(plan)?.data);
+        }
+        let rewritten = originals
+            .iter()
+            .cloned()
+            .map(Self::propagate)
+            .collect::<datafusion::error::Result<Vec<_>>>()?;
+        let result = Self::transform(replace_children_if_necessary(plan, rewritten)?)?;
+        if result.transformed {
+            return Ok(result.data);
+        }
+        let plan = result.data;
+        let required = plan.input_distribution_requirements();
+        let satisfies = |index, child: &Arc<dyn ExecutionPlan>| {
+            // `EnsureRequirements` accepts a child hash-partitioned on a subset of the
+            // required keys only in some cases. A subset always counts here, so
+            // `original` passes whenever `EnsureRequirements` could have accepted it.
+            let options = ChildSatisfactionOptions::new().with_allow_subset(true);
+            required
+                .child_satisfaction(index, child.as_ref(), options)
+                .map(|satisfaction| satisfaction.is_satisfied())
+        };
+        let children = originals
+            .into_iter()
+            .zip(plan.children().into_iter().cloned())
+            .enumerate()
+            .map(|(index, (original, rewritten))| {
+                let lost = satisfies(index, &original)? && !satisfies(index, &rewritten)?;
+                Ok(if lost { original } else { rewritten })
+            })
+            .collect::<datafusion::error::Result<Vec<_>>>()?;
+        // Returns `plan` itself when no child went back to its original.
+        replace_children_if_necessary(plan, children)
+    }
 }
 impl PhysicalOptimizerRule for PropagateEmptyExecRule {
     fn optimize(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        _config: &ConfigOptions,
+        config: &ConfigOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        Ok(plan.transform_up(Self::transform)?.data)
+        let bc = config
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_default();
+        if !bc.propagate_empty_enabled() {
+            Ok(plan)
+        } else {
+            Self::propagate(plan)
+        }
     }
 
     fn name(&self) -> &str {
@@ -268,7 +332,7 @@ pub fn as_join(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinInfo<'_>> {
             left: join.left(),
             right: join.right(),
             schema: join.schema(),
-            has_projection: false,
+            has_projection: join.projection.is_some(),
         });
     }
 
@@ -369,9 +433,11 @@ pub fn build_null_padded_projection(
 mod tests {
     use super::*;
 
+    use crate::state::aqe::test::stats_table::sized_statistics;
+    use crate::state::aqe::test::{statistics_exec, unknown_statistics_exec};
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
-        common::{ColumnStatistics, JoinType, NullEquality, ScalarValue, Statistics},
+        common::{JoinType, NullEquality, ScalarValue},
         physical_expr::aggregate::AggregateExprBuilder,
         physical_plan::{
             aggregates::{AggregateMode, PhysicalGroupBy},
@@ -387,36 +453,21 @@ mod tests {
     }
 
     pub fn empty_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Exact(0),
-                total_byte_size: Precision::Exact(0),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("a", DataType::Int32, true)]),
-        ))
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
+        statistics_exec(sized_statistics(&schema, 0, 0), &schema)
     }
 
     pub fn non_empty_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Exact(100),
-                total_byte_size: Precision::Exact(800),
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("a", DataType::Int32, true)]),
-        ))
+        let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
+        statistics_exec(sized_statistics(&schema, 100, 800), &schema)
     }
 
     pub fn unknown_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Absent,
-                total_byte_size: Precision::Absent,
-                column_statistics: vec![ColumnStatistics::new_unknown()],
-            },
-            Schema::new(vec![Field::new("a", DataType::Int32, true)]),
-        ))
+        unknown_statistics_exec(&Schema::new(vec![Field::new(
+            "a",
+            DataType::Int32,
+            true,
+        )]))
     }
 
     pub fn join_on() -> Vec<(
@@ -1018,14 +1069,8 @@ mod tests {
     }
 
     fn non_empty_two_col_stats_exec() -> Arc<dyn ExecutionPlan> {
-        Arc::new(StatisticsExec::new(
-            Statistics {
-                num_rows: Precision::Exact(100),
-                total_byte_size: Precision::Exact(800),
-                column_statistics: vec![ColumnStatistics::new_unknown(); 2],
-            },
-            two_col_schema(),
-        ))
+        let schema = two_col_schema();
+        statistics_exec(sized_statistics(&schema, 100, 800), &schema)
     }
 
     fn hash_join_with_projection(
@@ -1091,6 +1136,83 @@ mod tests {
             "expected join to be untouched, got {:?}",
             result.name()
         );
+    }
+
+    fn sort_merge_join_with_projection(
+        left: Arc<dyn ExecutionPlan>,
+        right: Arc<dyn ExecutionPlan>,
+        join_type: JoinType,
+        projection: Vec<usize>,
+    ) -> Arc<dyn ExecutionPlan> {
+        Arc::new(
+            SortMergeJoinExec::try_new(
+                left,
+                right,
+                join_on(),
+                None,
+                join_type,
+                vec![Default::default()],
+                NullEquality::NullEqualsNothing,
+            )
+            .unwrap()
+            .with_projection(Some(projection))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn smj_left_join_with_embedded_projection_right_empty_untouched() {
+        // A SortMergeJoinExec can carry an embedded projection too. Null-padding
+        // it positionally would read a left column where the projection names a
+        // right one, so the join must stay as is.
+        let plan = sort_merge_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::Left,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert!(
+            result.downcast_ref::<SortMergeJoinExec>().is_some(),
+            "expected join to be untouched, got {:?}",
+            result.name()
+        );
+        assert_eq!(result.schema(), join_schema);
+    }
+
+    #[test]
+    fn smj_left_anti_with_embedded_projection_right_empty_untouched() {
+        let plan = sort_merge_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::LeftAnti,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert_eq!(result.schema(), join_schema);
+        assert!(
+            result.downcast_ref::<SortMergeJoinExec>().is_some(),
+            "expected join to be untouched, got {:?}",
+            result.name()
+        );
+    }
+
+    #[test]
+    fn smj_inner_join_with_embedded_projection_right_empty_is_empty() {
+        // Arms that produce an EmptyExec use the join's own projected schema,
+        // so they still fire with a projection.
+        let plan = sort_merge_join_with_projection(
+            non_empty_two_col_stats_exec(),
+            empty_stats_exec(),
+            JoinType::Inner,
+            vec![1],
+        );
+        let join_schema = plan.schema();
+        let result = transform(plan);
+        assert_empty(&result);
+        assert_eq!(result.schema(), join_schema);
     }
 
     #[test]

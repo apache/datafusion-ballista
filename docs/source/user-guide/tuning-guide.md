@@ -138,6 +138,23 @@ isolated from other tasks. Idle slots do not lend their share to busy ones,
 which keeps task memory predictable at the cost of some unused capacity when
 the executor is under-utilized.
 
+## Choosing the Executor's Memory Allocator
+
+The `ballista-executor` binary uses [mimalloc](https://github.com/microsoft/mimalloc)
+as its global allocator by default. To use
+[jemalloc](https://github.com/jemalloc/jemalloc) instead, build it with the
+`jemalloc` feature, which takes precedence over mimalloc:
+
+```sh
+cargo install --locked ballista-executor --features jemalloc
+```
+
+Allocators differ in how much memory they hold on to after it is freed, so the
+choice can change an executor's resident memory as well as its speed. The
+memory pool described above counts reservations, not resident memory, so leave
+headroom whichever allocator you use. jemalloc is not supported on Windows
+(MSVC) targets.
+
 The executor refuses to start if the per-task share would round to zero (i.e.
 `memory_pool_size < vcores`).
 
@@ -247,25 +264,32 @@ two independent triggers fires:
 - the per-task buffered-bytes budget
   (`ballista.shuffle.sort_based.memory_limit_per_task_bytes`) is reached. This
   budget is counted independently of the memory pool, so it bounds the writer's
-  memory even when the pool is unbounded (the default). Setting it to `0`
-  disables this trigger, leaving memory-pool pressure as the sole spill signal.
+  memory even when the pool is unbounded (`--memory-pool-size 0`). Setting it
+  to `0` disables this trigger, leaving memory-pool pressure as the sole spill
+  signal.
 
 **Warning:** setting `memory_limit_per_task_bytes` to `0` while the executor
-uses the default unbounded memory pool disables both spill triggers. The writer
-then buffers the entire task's shuffle output in memory and never spills, which
-can exhaust the executor and cause an out-of-memory failure on large inputs.
-Only use `0` together with a bounded memory pool (see
+runs an unbounded memory pool (`--memory-pool-size 0`) disables both spill
+triggers. The writer then buffers the entire task's shuffle output in memory
+and never spills, which can exhaust the executor and cause an out-of-memory
+failure on large inputs. Only use `0` together with a bounded memory pool (the
+default; see
 [Configuring Executor Memory Pool](#configuring-executor-memory-pool)), so
 pool pressure still forces spilling.
 
-After the input stream finishes, the remaining in-memory data and any spilled
-batches are written into a single consolidated Arrow IPC file per input
-partition, alongside an index file that lets readers seek directly to a given
-output partition.
+At the end of input, the writer encodes each output partition's buffered rows
+and reserves the encoded bytes from the memory pool. A partition whose bytes
+the pool refuses is appended to its spill file instead. The per-task budget
+does not apply to this step, so only memory-pool pressure can make it spill.
+With an unbounded pool (`--memory-pool-size 0`) it never does.
 
-This produces `2 × N` files instead of `N × M`, coalesces small batches
-to a target size before writing, and bounds shuffle memory use via
-spilling.
+The task's in-memory data and any spilled batches are then written into a
+single consolidated Arrow IPC file per task, alongside an index file that lets
+readers seek directly to a given output partition.
+
+This produces two files per task instead of one per input and output
+partition pair, coalesces small batches to a target size before writing, and
+bounds shuffle memory use via spilling.
 
 Worst-case sort-shuffle memory per executor is approximately
 `vcores × memory_limit_per_task_bytes`, since one writer task can run per
@@ -285,6 +309,50 @@ The following session-level keys tune its behavior:
 | ballista.shuffle.sort_based.memory_limit_per_task_bytes | UInt64 | 268435456 | Per-task buffered-bytes budget at which the sort shuffle writer spills its in-memory batches to disk. Counted independently of the runtime memory pool, so spilling kicks in even when the pool is unbounded. Total worst-case sort shuffle memory per executor is approximately vcores * this value. Set to 0 to disable the per-task budget and rely solely on runtime memory-pool pressure to trigger spilling; this is safe only with a bounded memory pool, otherwise the writer never spills and may run out of memory. |
 
 <!-- END GENERATED CONFIG REFERENCE -->
+
+### Partition-id shuffles
+
+A hash shuffle assigns rows to partitions with DataFusion's hash. That is
+consistent within a job, so joins and aggregations over shuffled inputs are
+correct, but it can't match data already partitioned by another function. Spark
+partitions by Murmur3, for example, and a Spark-bucketed table read without a
+shuffle only lines up with a shuffled input if the shuffle places rows the same
+way.
+
+A client that submits its own physical plan can do the placement itself. Put a
+`PartitionIdRepartitionExec` where a hash `RepartitionExec` would go, and have
+the plan below it compute each row's output partition into an integer column:
+
+```rust
+use ballista_core::execution_plans::PartitionIdRepartitionExec;
+
+// `plan` produces (key, value, pid): the id is column 2, and there are 8
+// output partitions.
+let shuffle = PartitionIdRepartitionExec::try_new(plan, 2, 8)?;
+```
+
+Output partition `i` holds exactly the rows whose id is `i`. The id column is
+dropped before the rows are written, so whatever reads the shuffle sees the
+input's columns without it (the id can't be the input's only column). A null,
+negative or out-of-range id fails the task.
+
+Some things to keep in mind:
+
+- The node only marks the boundary and can't be executed. The static planner
+  replaces it with a stage that ends in the sort-based writer. The adaptive
+  planner rejects it, because it may coalesce or re-plan an exchange's
+  partitions, which would break the placement. Set
+  `ballista.planner.adaptive.enabled` to `false` if a plan containing the node
+  would otherwise be planned adaptively. Pipelined execution only shuffles by
+  hash, so it rejects the node too.
+- The shuffle's output is reported as unknown partitioning, whatever function
+  produced the ids, so operators that require hash-partitioned input won't see
+  their requirement met. Put the node under operators that declare no
+  distribution requirement, such as a fragment node that does its joins and
+  aggregations internally.
+- `BallistaPhysicalExtensionCodec` serializes the node, so a plan that contains
+  it can be submitted over gRPC. A custom physical codec only needs to delegate
+  to it, as in the [extensions example](extensions-example.md).
 
 ## Adaptive Query Execution
 
@@ -347,7 +415,9 @@ currently implemented:
   downstream exchange is replaced with an empty execution node, and emptiness
   is propagated up the plan so downstream stages are skipped entirely.
 - **Shuffle-partition coalescing.** Adjacent small output partitions of a
-  completed stage are merged so the next stage runs fewer, larger tasks.
+  completed stage are merged so the next stage runs fewer, larger tasks, down
+  to a single task when the whole shuffle fits in
+  `ballista.planner.coalesce.target_partition_bytes`.
   Disabled by default; enable with `ballista.planner.coalesce.enabled` and tune
   with the `ballista.planner.coalesce.*` keys documented in
   [Configuration](configs.md).
@@ -355,13 +425,21 @@ currently implemented:
   distributed range shuffle so `BoundedWindowAggExec` is not a serial
   bottleneck. Disabled by default; enable with
   `ballista.planner.parallel_window.enabled`.
+- **Exchange reuse.** When a query reads the same subplan more than once, such
+  as a common table expression joined to itself or TPC-H q15's revenue view,
+  the subplan's shuffle stage runs once and every reader reads its output.
+  Subplans with a volatile expression such as `random()`, and range-shuffled
+  subplans, are never shared. Enabled by default; set
+  `ballista.planner.reuse_exchange.enabled` to `false` to run each copy.
 
 ### Current limitations
 
 The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
-- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
+- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986)):
+  a job that loses the output of a stage that has already finished fails
+  instead of rerunning the stage
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
@@ -385,15 +463,34 @@ cached.collect().await?;       // reads it
 ```
 
 - Cached data is shuffle output on the executors. If a query loses part of it
-  (an executor holding it is lost, or a fetch from it fails), the query fails
-  with "lost DataFrame::cache() data; retry the query", and the retry rebuilds
-  the cache.
-- Cached data is not evicted yet: it is kept until it is found lost, so cache
-  only what you reuse.
+  (an executor holding it is lost, or a fetch from it fails), it rebuilds the
+  cache and carries on. A query planned by the adaptive planner, a pipelined
+  query once its tasks have started, or one that also reads the lost cache, or
+  a cache it was built from, another way (a self-join of a cached frame, say),
+  fails instead with "lost DataFrame::cache() data; retry the query", and the
+  retry rebuilds the cache.
+- Cached data is not evicted yet: it is kept until it is found lost, or its
+  session is removed through the scheduler's `RemoveSession` gRPC call, which
+  the Rust and Python clients do not expose yet. So cache only what you reuse.
+  Each `cache()` call caches its DataFrame anew; an earlier call's cache is not
+  freed.
 - `EXPLAIN` of a cached DataFrame never builds it.
 - An operator can turn caching off for the whole cluster with the scheduler's
   `--disable-dataframe-cache` flag; cached DataFrames are then computed as part
   of each query.
+
+A cache works in both execution modes. Its build always runs staged, and
+queries over it run in the session's mode, so a
+[pipelined](pipelined-execution.md) session reads a cache with streaming
+queries.
+
+A full example, in staged and pipelined modes, from
+[`examples/examples/standalone-dataframe-cache.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-dataframe-cache.rs):
+
+```{literalinclude} ../../../examples/examples/standalone-dataframe-cache.rs
+:language: rust
+:start-after: under the License.
+```
 
 See the [DataFrame cache design](../contributors-guide/dataframe-cache.md) for
 how it works.

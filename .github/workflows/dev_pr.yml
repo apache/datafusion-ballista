@@ -17,41 +17,78 @@
 
 name: Labeler
 
+# Labels a pull request after dev_pr_trigger.yml runs for it.
+#
+# GitHub blocks `pull_request_target` on public repositories by default, and
+# ASF infra policy disables it (https://infra.apache.org/github-actions-policy.html).
+# A `pull_request` run from a fork only gets a read-only token, so the labels
+# are written here instead: `workflow_run` runs this file from the default
+# branch with a token that can write them. Nothing from the pull request is
+# checked out or executed, and nothing its run produced is read. The pull
+# request is looked up from the run's head repository, branch and commit, and
+# actions/labeler reads its changed files through the API.
+
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  group: ${{ github.repository }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}-${{ github.workflow }}
   cancel-in-progress: true
 
 on:
-  pull_request_target:
+  workflow_run:
+    workflows:
+      - Labeler trigger
     types:
-      - opened
-      - edited
-      - synchronize
+      - completed
+
+permissions: {}
 
 jobs:
   process:
     name: Process
     runs-on: macos-latest
+    if: github.event.workflow_run.event == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
+      # `workflow_run.pull_requests` is empty for pull requests from forks, so
+      # find the open pull requests by head branch and commit. A commit that is
+      # no longer a head matches nothing, since the run for the newer push
+      # labels the pull request. The same branch can target several base
+      # branches, so every match is labeled.
+      - name: Find the pull requests
+        id: pr
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const head = run.head_repository;
+            // The head repository is null when the fork was deleted.
+            if (!head) {
+              core.info('The head repository no longer exists');
+              return;
+            }
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${head.owner.login}:${run.head_branch}`,
+              per_page: 100,
+            });
+            const numbers = pulls
+              .filter((pull) => pull.head.sha === run.head_sha
+                && pull.head.repo?.full_name === head.full_name)
+              .map((pull) => pull.number);
+            if (numbers.length === 0) {
+              core.info(`No open pull request has head ${head.full_name}@${run.head_sha}`);
+              return;
+            }
+            core.setOutput('numbers', numbers.join('\n'));
+
       - name: Assign GitHub labels
-        if: |
-          github.event_name == 'pull_request_target' &&
-            (github.event.action == 'opened' ||
-             github.event.action == 'synchronize')
+        if: steps.pr.outputs.numbers != ''
         uses: actions/labeler@v7.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           configuration-path: .github/workflows/dev_pr/labeler.yml
+          pr-number: ${{ steps.pr.outputs.numbers }}
           sync-labels: true
-
-      # TODO: Enable this when eps1lon/actions-label-merge-conflict is available.
-      # - name: Checks if PR needs rebase
-      #   if: |
-      #     github.event_name == 'push' ||
-      #     (github.event_name == 'pull_request_target' &&
-      #        (github.event.action == 'opened' ||
-      #         github.event.action == 'synchronize'))
-      #   uses: eps1lon/actions-label-merge-conflict@releases/2.x
-      #   with:
-      #     dirtyLabel: "needs-rebase"
-      #     repoToken: "${{ secrets.GITHUB_TOKEN }}"

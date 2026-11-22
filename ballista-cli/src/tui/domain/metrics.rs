@@ -76,50 +76,20 @@ impl MetricsData {
         }
     }
 
-    fn get_selected_metric_index(&self) -> Option<usize> {
-        self.table_state.selected()
-    }
-
     pub fn scroll_down(&mut self) {
-        if self.metrics.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_metric_index() {
-            if selected < self.metrics.len() - 1 {
-                self.table_state.select(Some(selected + 1));
-            } else {
-                self.table_state.select(None);
-            }
-        } else {
-            self.table_state.select(Some(0));
-        }
-
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_metric_index().unwrap_or(0));
+        super::scroll_down(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.metrics.len(),
+        );
     }
 
     pub fn scroll_up(&mut self) {
-        if self.metrics.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-
-        if let Some(selected) = self.get_selected_metric_index() {
-            if selected == 0 {
-                self.table_state.select(None);
-            } else {
-                self.table_state.select(Some(selected - 1));
-            }
-        } else {
-            self.table_state.select(Some(self.metrics.len() - 1));
-        }
-
-        self.scrollbar_state = self
-            .scrollbar_state
-            .position(self.get_selected_metric_index().unwrap_or(0));
+        super::scroll_up(
+            &mut self.table_state,
+            &mut self.scrollbar_state,
+            self.metrics.len(),
+        );
     }
 }
 
@@ -259,78 +229,5 @@ ballista_executors_active 3
             .collect();
         assert_eq!(names[0], "ballista_jobs_total");
         assert_eq!(names[1], "ballista_executors_active");
-    }
-
-    // --- scroll_down tests ---
-
-    #[test]
-    fn scroll_down_empty_list_stays_none() {
-        let mut data = MetricsData::new();
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_down_with_no_selection_selects_first() {
-        let metrics = parse_metrics(PROMETHEUS_TEXT);
-        let mut data = make_metrics_data(metrics, SortColumn::None, SortOrder::Ascending);
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_down_advances_selection() {
-        let metrics = parse_metrics(PROMETHEUS_TEXT);
-        assert!(metrics.len() >= 2, "Need at least 2 metrics for this test");
-        let mut data = make_metrics_data(metrics, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(0));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), Some(1));
-    }
-
-    #[test]
-    fn scroll_down_at_last_item_deselects() {
-        let metrics = parse_metrics(PROMETHEUS_TEXT);
-        let last = metrics.len() - 1;
-        let mut data = make_metrics_data(metrics, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(last));
-        data.scroll_down();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    // --- scroll_up tests ---
-
-    #[test]
-    fn scroll_up_empty_list_stays_none() {
-        let mut data = MetricsData::new();
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
-    }
-
-    #[test]
-    fn scroll_up_with_no_selection_selects_last() {
-        let metrics = parse_metrics(PROMETHEUS_TEXT);
-        let last = metrics.len() - 1;
-        let mut data = make_metrics_data(metrics, SortColumn::None, SortOrder::Ascending);
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(last));
-    }
-
-    #[test]
-    fn scroll_up_moves_selection_back() {
-        let metrics = parse_metrics(PROMETHEUS_TEXT);
-        let mut data = make_metrics_data(metrics, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(1));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), Some(0));
-    }
-
-    #[test]
-    fn scroll_up_at_first_item_deselects() {
-        let metrics = parse_metrics(PROMETHEUS_TEXT);
-        let mut data = make_metrics_data(metrics, SortColumn::None, SortOrder::Ascending);
-        data.table_state.select(Some(0));
-        data.scroll_up();
-        assert_eq!(data.table_state.selected(), None);
     }
 }

@@ -60,6 +60,7 @@ Table of content
    user-guide/versioning
    user-guide/extending-components
    user-guide/extensions-example
+   user-guide/iceberg
 
 .. toctree::
    :maxdepth: 1

@@ -45,6 +45,7 @@ use ballista_core::serde::scheduler::Action as BallistaAction;
 use ballista_core::serving::{
     BoxedFlightStream, ResultBackend, from_ballista_err, serve_do_get,
 };
+use ballista_core::utils::create_write_options;
 use datafusion::arrow::ipc::CompressionType;
 
 use arrow_flight::{
@@ -150,9 +151,8 @@ impl ResultBackend for LocalDiskBackend {
                         .open(&key, partition, timeout)
                         .await
                         .map_err(|e| Status::internal(e.to_string()))?;
-                    let options = IpcWriteOptions::default()
-                        .try_with_compression(opened.compression)
-                        .map_err(|e| from_arrow_err(&e))?;
+                    let options = create_write_options(opened.compression)
+                        .map_err(|e| Status::internal(e.to_string()))?;
                     let schema = opened.stream.schema();
                     let batches = opened
                         .stream
@@ -612,17 +612,18 @@ async fn stream_sort_shuffle_block(
     let (start, end) = index.get_partition_range(partition_id);
     let (start, end) = (start as u64, end as u64);
 
-    // One open + dup gives us two independent file cursors over the same
-    // inode: one reads the header from offset 0, the other seeks to the
-    // partition. `chain` and `take` consume their readers by value, so two
-    // cursors are unavoidable here.
-    let header_file = tokio::fs::File::open(data_path)
-        .await
-        .map_err(|e| Status::internal(format!("Failed to open file: {e}")))?;
-    let mut partition_file = header_file
-        .try_clone()
-        .await
-        .map_err(|e| Status::internal(format!("dup file handle: {e}")))?;
+    // Two opens give two independent file cursors: one reads the header from
+    // offset 0, the other seeks to the partition. A `try_clone` would not do,
+    // since a duplicated handle shares its cursor, so the seek would move the
+    // header read too. `chain` and `take` consume their readers by value, so
+    // two handles are unavoidable here.
+    let open = || async {
+        tokio::fs::File::open(data_path)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to open file: {e}")))
+    };
+    let header_file = open().await?;
+    let mut partition_file = open().await?;
     partition_file
         .seek(std::io::SeekFrom::Start(start))
         .await
@@ -679,6 +680,36 @@ fn from_arrow_err(e: &ArrowError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header and the partition are read through two handles of one file.
+    /// They must not share a cursor, or the header read starts where the
+    /// partition seek left it and the response runs past the partition.
+    #[tokio::test]
+    async fn sort_shuffle_block_is_the_header_then_the_partition() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("data.arrow");
+        let data: Vec<u8> = (0..30u8).collect();
+        std::fs::write(&data_path, &data).unwrap();
+        // Header [0, 10), partition 0 [10, 20), partition 1 [20, 30).
+        let mut index = ShuffleIndex::new(2);
+        index.set_offset(0, 10);
+        index.set_offset(1, 20);
+        index.set_total_length(30);
+        index.write_to_file(&get_index_path(&data_path)).unwrap();
+
+        for (partition_id, range) in [(0, 10..20), (1, 20..30)] {
+            let bytes: Vec<u8> = stream_sort_shuffle_block(&data_path, partition_id)
+                .await
+                .unwrap()
+                .map_ok(|result| result.body.to_vec())
+                .try_concat()
+                .await
+                .unwrap();
+            let mut expected = data[..10].to_vec();
+            expected.extend_from_slice(&data[range]);
+            assert_eq!(bytes, expected, "partition {partition_id}");
+        }
+    }
     use arrow_flight::decode::FlightRecordBatchStream;
     use ballista_core::execution_plans::{PipelinedRegistry, PipelinedShuffleWriterExec};
     use ballista_core::serde::encode_protobuf;

@@ -46,9 +46,10 @@ class TestExplainVisual:
         assert isinstance(viz, ExecutionPlanVisualization)
 
     def test_explain_visual_with_analyze(self, ctx):
-        """Test explain_visual with analyze=True."""
+        """Test explain_visual with the deprecated analyze=True."""
         df = ctx.sql("SELECT 1 as value")
-        viz = explain_visual(df, analyze=True)
+        with pytest.warns(DeprecationWarning, match="analyze=True"):
+            viz = explain_visual(df, analyze=True)
         assert isinstance(viz, ExecutionPlanVisualization)
         assert viz.analyze is True
 

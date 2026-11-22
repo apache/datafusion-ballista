@@ -64,7 +64,7 @@ or when building the session:
 
 ```rust
 let config = SessionConfig::new_with_ballista()
-    .set_str("ballista.execution.mode", "pipelined");
+    .with_ballista_execution_mode(ExecutionMode::Pipelined);
 let state = SessionStateBuilder::new()
     .with_config(config)
     .with_default_features()
@@ -136,6 +136,15 @@ does not work.
   executor with a 2 GB pool, but fails in pipelined mode with that pool. Give
   executors more memory, use fewer partitions, or run such queries in staged
   mode.
+
+## Queries over a cached DataFrame
+
+`DataFrame::cache()` works in a pipelined session. A cache is always built by
+an ordinary staged job, run by the first query that reads it; later queries
+read the cached result pipelined, streaming their rows as they run, so
+expensive preparation is done once and the interactive queries over it stay
+short. See [Caching DataFrames](tuning-guide.md#caching-dataframes) for how to
+turn caching on, and a full example.
 
 ## Settings
 

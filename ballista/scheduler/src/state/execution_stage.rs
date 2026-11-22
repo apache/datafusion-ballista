@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::common::ColumnStatistics;
 use datafusion::common::stats::Precision;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::{ColumnStatistics, DataFusionError};
 use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -31,12 +32,14 @@ use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Metric};
 use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
+use std::fmt::Display;
 
 use crate::cache::is_external_stage_id;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{
     PipelinedShuffleWriterExec, RangeShuffleWriterExec, ShuffleReaderExec,
     ShuffleWriterExec, SortShuffleWriterExec, TaskRuntimeStats, TaskWindowState,
+    UnresolvedShuffleExec,
 };
 use ballista_core::hll::HyperLogLog;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
@@ -46,6 +49,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
+use ballista_core::utils::collect_plan_metrics;
 
 use crate::display::DisplayableBallistaExecutionPlan;
 
@@ -202,6 +206,7 @@ pub struct ResolvedStage {
 /// 3. manage the stage-level combined metrics
 ///    Running stages will only be maintained in memory and will not saved to the backend storage
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct RunningStage {
     /// Stage ID
     pub stage_id: usize,
@@ -234,6 +239,13 @@ pub struct RunningStage {
     pub task_failure_numbers: Vec<usize>,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
     pub stage_metrics: Option<Vec<MetricsSet>>,
+    /// How many operator metrics sets `plan` has, which is how many a task
+    /// of this stage reports. A task that reports a different number ran a
+    /// plan of a different shape and its metrics can't be merged.
+    pub plan_metrics_len: usize,
+    /// Whether a task's skipped metrics were already logged as a warning, so
+    /// that only the first skipped task of the stage warns.
+    pub skipped_metrics_warned: bool,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
     /// Per-task runtime-stats reports collected from every successful task
@@ -255,6 +267,12 @@ pub struct RunningStage {
     /// Prefix-merged in global partition order to seed a downstream
     /// `PrefixMergeExec`; dropped when the stage transitions to Successful.
     pub window_state_reports: Vec<TaskWindowState>,
+    /// The `UnionExec` branch that can't be restricted to part of its
+    /// partitions, if the plan has one, which makes binding run the stage as
+    /// one task. `None` until the first bind that needs it computes it: it
+    /// depends only on `plan` and the job's resolver, which are fixed for a
+    /// running stage.
+    pub(crate) unsplittable_union_branch: Option<Option<Arc<dyn ExecutionPlan>>>,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -693,15 +711,24 @@ impl RunningStage {
             partitions,
             output_links,
             inputs,
-            plan,
             pending: PendingPartitions::new(partitions),
             task_infos: Vec::new(),
             task_failure_numbers: vec![0; partitions],
             stage_metrics: None,
+            plan_metrics_len: collect_plan_metrics(plan.as_ref()).len(),
+            skipped_metrics_warned: false,
+            plan,
             session_config,
             runtime_stats_reports: Vec::new(),
             window_state_reports: Vec::new(),
+            unsplittable_union_branch: None,
         }
+    }
+
+    /// Replace the plan before dispatch and refresh the expected task metrics shape.
+    pub(crate) fn replace_plan(&mut self, plan: Arc<dyn ExecutionPlan>) {
+        self.plan_metrics_len = collect_plan_metrics(plan.as_ref()).len();
+        self.plan = plan;
     }
 
     /// Converts this running stage to a successful stage after all tasks complete.
@@ -999,7 +1026,16 @@ impl RunningStage {
             }));
     }
 
-    /// update and upsert the task metrics to the stage metrics
+    /// Merges a successful task's operator metrics into the stage metrics.
+    ///
+    /// A task reports one metrics set per operator of the plan it ran. The
+    /// scheduler restricts each task's copy of the stage plan to the task's
+    /// partitions, and that can change the shape, for example by swapping an
+    /// `EmptyExec` without metrics for a stand-in source with them. Such a
+    /// task's metrics would not line up with the stage plan, so they are
+    /// skipped with an error. The check is against the stage plan, not
+    /// against the first task to report, so the tasks that match the plan
+    /// always merge.
     pub fn update_task_metrics(
         &mut self,
         task_id: usize,
@@ -1010,20 +1046,21 @@ impl RunningStage {
             return Ok(());
         }
 
+        if metrics.len() != self.plan_metrics_len {
+            return Err(BallistaError::Internal(format!(
+                "Error updating task metrics to stage {}, task {} reported {} operator metrics sets \
+                but the stage plan has {}",
+                self.stage_id,
+                task_id,
+                metrics.len(),
+                self.plan_metrics_len
+            )));
+        }
+
         let global_partitions =
             self.task_infos[task_id].global_input_partition_ids.clone();
 
         let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
-            if metrics.len() != combined_metrics.len() {
-                return Err(BallistaError::Internal(format!(
-                    "Error updating task metrics to stage {}, task metrics array size {} does not equal \
-                with the stage metrics array size {} for task {}",
-                    self.stage_id,
-                    metrics.len(),
-                    combined_metrics.len(),
-                    task_id
-                )));
-            }
             let metrics_values_array = metrics
                 .into_iter()
                 .map(|ms| Self::metrics_set_from_task_metrics(ms, &global_partitions))
@@ -1049,6 +1086,31 @@ impl RunningStage {
         self.stage_metrics = Some(new_metrics_set);
 
         Ok(())
+    }
+
+    /// Logs that `error` made `update_task_metrics` skip the metrics of
+    /// `task_id`. The first skipped task of a stage is a warning. The rest go
+    /// to the debug log, since a wide stage can skip thousands of tasks for
+    /// the same reason.
+    pub fn log_skipped_metrics(
+        &mut self,
+        job_id: impl Display,
+        task_id: usize,
+        error: &BallistaError,
+    ) {
+        if !self.skipped_metrics_warned {
+            self.skipped_metrics_warned = true;
+            warn!(
+                "Ignoring the metrics of task {task_id} in stage {} of job {job_id}: {error}. \
+                Later skipped tasks of this stage are logged at debug level",
+                self.stage_id
+            );
+        } else {
+            debug!(
+                "Ignoring the metrics of task {task_id} in stage {} of job {job_id}: {error}",
+                self.stage_id
+            );
+        }
     }
 
     /// Convert a task's operator-metrics snapshot into a `MetricsSet`, mapping
@@ -1322,6 +1384,8 @@ impl SuccessfulStage {
             // It is Ok to forget the previous task failure attempts
             task_failure_numbers: vec![0; self.partitions],
             stage_metrics,
+            plan_metrics_len: collect_plan_metrics(self.plan.as_ref()).len(),
+            skipped_metrics_warned: false,
             session_config: self.session_config.clone(),
             stage_running_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1331,6 +1395,7 @@ impl SuccessfulStage {
             // Merged-cut logging fires per-attempt on final success.
             runtime_stats_reports: Vec::new(),
             window_state_reports: Vec::new(),
+            unsplittable_union_branch: None,
         }
     }
 
@@ -1491,28 +1556,118 @@ pub(crate) fn reads_external_data_on(
     })
 }
 
-/// Whether a failed fetch was for external (cache) data in `inputs`: one of
-/// their locations is on `executor_id` with the stage and partition the executor
-/// reported. The report has no job id, so when one of the job's own locations
-/// matches too, the failure counts as external.
-pub(crate) fn is_external_fetch_failure(
+/// The external (cache) inputs in `inputs` a failed fetch was for: those with a
+/// location on `executor_id` at the stage and partition the executor reported.
+/// The report has no job id, so one of the job's own inputs may match too.
+pub(crate) fn external_fetch_failures(
     inputs: &HashMap<usize, StageOutput>,
     executor_id: &str,
     stage_id: usize,
     partition_id: usize,
-) -> bool {
-    inputs.iter().any(|(id, output)| {
-        is_external_stage_id(*id)
-            && output
-                .partition_locations
-                .values()
-                .flatten()
-                .any(|location| {
-                    location.executor_meta.id == executor_id
-                        && location.partition_id.stage_id == stage_id
-                        && location.partition_id.partition_id == partition_id
-                })
-    })
+) -> Vec<usize> {
+    let mut lost: Vec<usize> = inputs
+        .iter()
+        .filter(|(id, output)| {
+            is_external_stage_id(**id)
+                && output
+                    .partition_locations
+                    .values()
+                    .flatten()
+                    .any(|location| {
+                        location.executor_meta.id == executor_id
+                            && location.partition_id.stage_id == stage_id
+                            && location.partition_id.partition_id == partition_id
+                    })
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    lost.sort_unstable();
+    lost
+}
+
+/// The partitions `plan`'s reader of external input `input_id` declares.
+pub(crate) fn external_reader_partitions(
+    plan: &dyn ExecutionPlan,
+    input_id: usize,
+) -> Option<usize> {
+    if let Some(reader) = plan.downcast_ref::<ShuffleReaderExec>()
+        && reader.stage_id == input_id
+    {
+        return Some(reader.partition.len());
+    }
+    if let Some(unresolved) = plan.downcast_ref::<UnresolvedShuffleExec>()
+        && unresolved.stage_id == input_id
+    {
+        return Some(unresolved.output_partition_count);
+    }
+    plan.children()
+        .into_iter()
+        .find_map(|child| external_reader_partitions(child.as_ref(), input_id))
+}
+
+/// `plan` with its reader of external input `input_id` reading `locations`,
+/// for a stage whose plan keeps its readers rather than resolving them from
+/// its inputs.
+pub(crate) fn with_external_locations(
+    plan: Arc<dyn ExecutionPlan>,
+    input_id: usize,
+    locations: &StageOutput,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let rewritten = plan.transform(|node| {
+        let Some(reader) = node.downcast_ref::<ShuffleReaderExec>() else {
+            return Ok(Transformed::no(node));
+        };
+        if reader.stage_id != input_id {
+            return Ok(Transformed::no(node));
+        }
+        // Rebuilt as a plain reader, which is how cache reads are planned. One
+        // with broadcast, coalesced or skew-join reads would silently lose them
+        // here and read the wrong partitions.
+        if reader.broadcast || reader.coalesce.is_some() || reader.skew_join.is_some() {
+            return Err(DataFusionError::Internal(format!(
+                "external input {input_id} is read by a broadcast, coalesced or \
+                 skew-join reader, which cannot be given new locations"
+            )));
+        }
+        let read = ShuffleReaderExec::try_new(
+            input_id,
+            locations
+                .clone()
+                .partition_locations(reader.partition.len()),
+            reader.schema(),
+            reader.properties().partitioning.clone(),
+        )?;
+        Ok(Transformed::yes(Arc::new(read) as Arc<dyn ExecutionPlan>))
+    })?;
+    Ok(rewritten.data)
+}
+
+/// A complete [`StageOutput`] of `locations` for a reader of `partitions`
+/// partitions. A rebuild can have another count; the reader's partitioning is
+/// unknown, so partition `j` folds into `j % partitions`.
+pub(crate) fn fold_external_locations(
+    locations: Vec<Vec<PartitionLocation>>,
+    partitions: usize,
+) -> Result<StageOutput> {
+    let mut output = StageOutput::new();
+    for (partition, locations) in locations.into_iter().enumerate() {
+        if locations.is_empty() {
+            continue;
+        }
+        if partitions == 0 {
+            return Err(BallistaError::Internal(
+                "an external input read with no partitions was rebuilt with data"
+                    .to_owned(),
+            ));
+        }
+        output
+            .partition_locations
+            .entry(partition % partitions)
+            .or_default()
+            .extend(locations);
+    }
+    output.complete = true;
+    Ok(output)
 }
 
 /// This data structure collects the partition locations for an `ExecutionStage`.
@@ -1585,6 +1740,7 @@ impl StageOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ballista_core::JobId;
     use ballista_core::hll::DEFAULT_PRECISION;
     use ballista_core::serde::protobuf::{
         ColumnSketch, OperatorMetric, SuccessfulTask, TaskColumnStats, TaskStatus,
@@ -1594,9 +1750,19 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use std::collections::HashMap;
 
+    /// A stage whose plan is a shuffle writer over an `EmptyExec`, so it has
+    /// one operator with metrics, like the stage plans the planner builds.
     fn make_running_stage(partitions: usize) -> RunningStage {
         let schema = Arc::new(datafusion::arrow::datatypes::Schema::empty());
-        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(schema));
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            ShuffleWriterExec::try_new(
+                JobId::new("test-job"),
+                1,
+                Arc::new(EmptyExec::new(schema)),
+                String::new(),
+            )
+            .unwrap(),
+        );
         RunningStage::new(
             1,
             0,
@@ -2010,6 +2176,58 @@ mod tests {
         let aggregated = operator_metrics.aggregate_by_name();
         assert_eq!(aggregated.output_rows(), Some(650));
         assert_eq!(aggregated.elapsed_compute().unwrap(), 65);
+    }
+
+    /// Tasks whose metrics don't match the stage plan are skipped whatever
+    /// order they report in. A mismatched first task must not set the shape
+    /// for the stage and crowd out the tasks that match the plan.
+    #[test]
+    fn test_update_task_metrics_checks_each_task_against_the_stage_plan() {
+        let mut stage = make_running_stage(3);
+        append_running_task(&mut stage, 0, "executor-1", vec![0]);
+        append_running_task(&mut stage, 1, "executor-1", vec![1]);
+        append_running_task(&mut stage, 2, "executor-1", vec![2]);
+        assert_eq!(stage.plan_metrics_len, 1);
+
+        // The first task to report ran a plan with two operators with metrics.
+        let err = stage
+            .update_task_metrics(
+                0,
+                vec![
+                    make_operator_metrics_set(100, 10),
+                    make_operator_metrics_set(100, 10),
+                ],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "task 0 reported 2 operator metrics sets but the stage plan has 1"
+            ),
+            "{err}"
+        );
+        assert!(stage.stage_metrics.is_none());
+        // Only the first skipped task warns.
+        assert!(!stage.skipped_metrics_warned);
+        stage.log_skipped_metrics("test-job", 0, &err);
+        assert!(stage.skipped_metrics_warned);
+
+        // A task that matches the plan merges even though it reported second.
+        stage
+            .update_task_metrics(1, vec![make_operator_metrics_set(200, 20)])
+            .unwrap();
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].output_rows(), Some(200));
+
+        // Another mismatched task is skipped and leaves the merged metrics alone.
+        let err = stage
+            .update_task_metrics(2, vec![make_operator_metrics_set(300, 30); 3])
+            .unwrap_err();
+        stage.log_skipped_metrics("test-job", 2, &err);
+        assert!(stage.skipped_metrics_warned);
+        let metrics = stage.stage_metrics.as_ref().unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].output_rows(), Some(200));
     }
 
     /// A task that covers multiple global partitions must file each partition's

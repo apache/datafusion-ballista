@@ -377,34 +377,27 @@ fn oom_context(e: DataFusionError) -> DataFusionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::int64_v_schema;
     use datafusion::arrow::array::Int64Array;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::TryStreamExt;
-
-    fn one_col_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]))
-    }
 
     fn batches(rows_per: usize, num_batches: usize) -> Vec<RecordBatch> {
         (0..num_batches)
             .map(|b| {
                 let start = (b * rows_per) as i64;
                 let array = Int64Array::from_iter_values(start..start + rows_per as i64);
-                RecordBatch::try_new(one_col_schema(), vec![Arc::new(array)]).unwrap()
+                RecordBatch::try_new(int64_v_schema(), vec![Arc::new(array)]).unwrap()
             })
             .collect()
     }
 
     fn memory_source(batches: Vec<RecordBatch>) -> Arc<dyn ExecutionPlan> {
-        let schema = one_col_schema();
-        let src =
-            MemorySourceConfig::try_new(&[batches], schema, None).expect("mem source");
-        Arc::new(DataSourceExec::new(Arc::new(src)))
+        let schema = int64_v_schema();
+        MemorySourceConfig::try_new_exec(&[batches], schema, None).expect("mem source")
     }
 
     /// Runtime context whose memory pool has a hard `pool_bytes` limit.

@@ -18,10 +18,9 @@
 use crate::cluster::{JobState, JobStateEvent};
 use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::ExecutionGraphBox;
-use crate::test_utils::{await_condition, mock_completed_task, mock_executor};
+use crate::test_utils::{await_condition, drain_tasks};
 use ballista_core::JobId;
 use ballista_core::error::Result;
-use ballista_core::serde::protobuf::JobStatus;
 use ballista_core::serde::protobuf::job_status::Status;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -71,17 +70,42 @@ impl<S: JobState> JobStateTest<S> {
 
     /// Asserts the job is in queued status.
     pub async fn assert_queued(self, job_id: &JobId) -> Result<Self> {
+        self.assert_status(job_id, "queued", |s| matches!(s, Status::Queued(_)))
+            .await
+    }
+
+    /// Asserts the job is in running status.
+    pub async fn assert_job_running(self, job_id: &JobId) -> Result<Self> {
+        self.assert_status(job_id, "running", |s| matches!(s, Status::Running(_)))
+            .await
+    }
+
+    /// Asserts the job is in failed status.
+    pub async fn assert_job_failed(self, job_id: &JobId) -> Result<Self> {
+        self.assert_status(job_id, "failed", |s| matches!(s, Status::Failed(_)))
+            .await
+    }
+
+    /// Asserts the job completed successfully.
+    pub async fn assert_job_successful(self, job_id: &JobId) -> Result<Self> {
+        self.assert_status(job_id, "successful", |s| matches!(s, Status::Successful(_)))
+            .await
+    }
+
+    async fn assert_status(
+        self,
+        job_id: &JobId,
+        expected: &str,
+        is_expected: impl Fn(&Status) -> bool,
+    ) -> Result<Self> {
         let status = self.state.get_job_status(job_id).await?;
+        let status =
+            status.unwrap_or_else(|| panic!("Job status not found for {job_id}"));
 
-        assert!(status.is_some(), "Queued job {} not found", job_id);
-
-        let status = status.unwrap();
         assert!(
-            matches!(&status, JobStatus {
-            job_id: status_job_id, status: Some(Status::Queued(_)), ..
-        } if status_job_id.as_str() == job_id.as_str()),
-            "Expected queued status but found {:?}",
-            status
+            status.job_id.as_str() == job_id.as_str()
+                && status.status.as_ref().is_some_and(is_expected),
+            "Expected {expected} status but found {status:?}"
         );
 
         Ok(self)
@@ -95,62 +119,9 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
-    /// Asserts the job is in running status.
-    pub async fn assert_job_running(self, job_id: &JobId) -> Result<Self> {
-        let status = self.state.get_job_status(job_id).await?;
-
-        assert!(status.is_some(), "Job status not found for {}", job_id);
-
-        let status = status.unwrap();
-        assert!(
-            matches!(&status, JobStatus {
-            job_id: status_job_id, status: Some(Status::Running(_)), ..
-        } if status_job_id.as_str() == job_id.as_str()),
-            "Expected running status but found {:?}",
-            status
-        );
-
-        Ok(self)
-    }
-
     /// Updates the job with the given execution graph.
     pub async fn update_job(self, graph: &ExecutionGraphBox) -> Result<Self> {
         self.state.save_job(graph.job_id(), graph).await?;
-        Ok(self)
-    }
-
-    /// Asserts the job is in failed status.
-    pub async fn assert_job_failed(self, job_id: &JobId) -> Result<Self> {
-        let status = self.state.get_job_status(job_id).await?;
-
-        assert!(status.is_some(), "Job status not found for {}", job_id);
-
-        let status = status.unwrap();
-        assert!(
-            matches!(&status, JobStatus {
-            job_id: status_job_id, status: Some(Status::Failed(_)), ..
-        } if status_job_id.as_str() == job_id.as_str()),
-            "Expected failed status but found {:?}",
-            status
-        );
-
-        Ok(self)
-    }
-
-    /// Asserts the job completed successfully.
-    pub async fn assert_job_successful(self, job_id: &JobId) -> Result<Self> {
-        let status = self.state.get_job_status(job_id).await?;
-
-        assert!(status.is_some(), "Job status not found for {}", job_id);
-        let status = status.unwrap();
-        assert!(
-            matches!(&status, JobStatus {
-            job_id: status_job_id, status: Some(Status::Successful(_)), ..
-        } if status_job_id.as_str() == job_id.as_str()),
-            "Expected success status but found {:?}",
-            status
-        );
-
         Ok(self)
     }
 
@@ -188,7 +159,7 @@ pub async fn test_job_lifecycle<S: JobState>(
         .assert_job_running(&job_id)
         .await?;
 
-    drain_tasks(&mut graph)?;
+    drain_tasks(graph.as_mut())?;
     graph.succeed_job()?;
 
     test.update_job(&graph)
@@ -199,30 +170,18 @@ pub async fn test_job_lifecycle<S: JobState>(
     Ok(())
 }
 
-/// Tests job failure during the planning phase.
+/// Tests failure of the job `job_id` during the planning phase.
 pub async fn test_job_planning_failure<S: JobState>(
     state: S,
-    graph: ExecutionGraphBox,
+    job_id: &JobId,
 ) -> Result<()> {
     let test = JobStateTest::new(state).await?;
 
-    let job_id = graph.job_id().to_owned();
-
-    test.queue_job(&job_id)?
-        .fail_planning(&job_id)
+    test.queue_job(job_id)?
+        .fail_planning(job_id)
         .await?
-        .assert_job_failed(&job_id)
+        .assert_job_failed(job_id)
         .await?;
-
-    Ok(())
-}
-
-fn drain_tasks(graph: &mut ExecutionGraphBox) -> Result<()> {
-    let executor = mock_executor("executor-id1".to_string());
-    while let Some(task) = graph.pop_next_task(&executor.id)? {
-        let task_status = mock_completed_task(task, &executor.id);
-        graph.update_task_status(&executor, vec![task_status], 1, 1)?;
-    }
 
     Ok(())
 }

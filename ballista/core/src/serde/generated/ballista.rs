@@ -35,7 +35,7 @@ pub struct LogicalPlanCacheNode {
 pub struct BallistaPhysicalPlanNode {
     #[prost(
         oneof = "ballista_physical_plan_node::PhysicalPlanType",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
     )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
@@ -86,6 +86,8 @@ pub mod ballista_physical_plan_node {
         PipelinedShuffleReader(super::PipelinedShuffleReaderExecNode),
         #[prost(message, tag = "20")]
         RuntimeFilter(super::RuntimeFilterExecNode),
+        #[prost(message, tag = "21")]
+        PartitionIdRepartition(super::PartitionIdRepartitionExecNode),
     }
 }
 /// Build taps and probe filters share the expression/id wire contract. A missing
@@ -166,6 +168,9 @@ pub struct PipelinedShuffleReaderExecNode {
     /// producer task.
     #[prost(bool, tag = "5")]
     pub broadcast: bool,
+    /// The executors the locations in `partition` refer to by `executor_index`.
+    #[prost(message, repeated, tag = "6")]
+    pub executors: ::prost::alloc::vec::Vec<ExecutorEndpoint>,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -176,7 +181,7 @@ pub struct PipelinedReaderPartition {
 /// Where a producer task of a pipelined stage serves one of its output
 /// partitions while it runs.
 #[allow(clippy::all)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PipelinedPartitionLocation {
     /// Job, producer stage and global output partition.
     #[prost(message, optional, tag = "1")]
@@ -184,8 +189,38 @@ pub struct PipelinedPartitionLocation {
     /// The producer task within its stage.
     #[prost(uint32, tag = "2")]
     pub task_id: u32,
+    /// The executor, when this location is reported in a job status. Unset inside
+    /// a reader node, where `executor_index` identifies it.
     #[prost(message, optional, tag = "3")]
-    pub executor_meta: ::core::option::Option<ExecutorMetadata>,
+    pub executor_meta: ::core::option::Option<ExecutorEndpoint>,
+    /// Inside a reader node, the position of the executor in its `executors`.
+    #[prost(uint32, tag = "4")]
+    pub executor_index: u32,
+}
+/// Where a shuffle finds each row's output partition: the value of an integer
+/// column of the shuffle's input, which the shuffle drops before writing.
+#[allow(clippy::all)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionIdRouting {
+    /// Index of the integer input column holding the partition id.
+    #[prost(uint32, tag = "1")]
+    pub column: u32,
+    /// Number of output partitions. Ids must lie in `0..partition_count`.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
+}
+/// Exchange marker that the distributed planner lowers to a stage boundary whose
+/// shuffle writer routes rows by an input column instead of hashing them. It never
+/// executes. The child plan is plumbed by the framework as `inputs\[0\]`.
+#[allow(clippy::all)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PartitionIdRepartitionExecNode {
+    /// Index of the integer input column holding the partition id.
+    #[prost(uint32, tag = "1")]
+    pub partition_id_column: u32,
+    /// Number of output partitions.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -546,10 +581,6 @@ pub struct SortShuffleWriterExecNode {
     pub stage_id: u32,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
-    #[prost(message, optional, tag = "4")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     /// Target batch size in rows when materializing buffered shuffle data.
     #[prost(uint64, tag = "8")]
     pub batch_size: u64,
@@ -559,6 +590,28 @@ pub struct SortShuffleWriterExecNode {
     /// before this field existed decodes to the built-in default rather than 0.
     #[prost(uint64, optional, tag = "9")]
     pub memory_limit_per_task_bytes: ::core::option::Option<u64>,
+    /// How rows are assigned to output partitions. A writer that predates the
+    /// field a node sets finds none it knows and rejects the node instead of
+    /// hashing.
+    #[prost(oneof = "sort_shuffle_writer_exec_node::Routing", tags = "4, 10, 11")]
+    pub routing: ::core::option::Option<sort_shuffle_writer_exec_node::Routing>,
+}
+/// Nested message and enum types in `SortShuffleWriterExecNode`.
+pub mod sort_shuffle_writer_exec_node {
+    /// How rows are assigned to output partitions. A writer that predates the
+    /// field a node sets finds none it knows and rejects the node instead of
+    /// hashing.
+    #[allow(clippy::all)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Routing {
+        #[prost(message, tag = "4")]
+        OutputPartitioning(::datafusion_proto::protobuf::PhysicalHashRepartition),
+        #[prost(message, tag = "10")]
+        PartitionIdRouting(super::PartitionIdRouting),
+        /// Range output partitioning; a hash stage sets `output_partitioning` instead.
+        #[prost(message, tag = "11")]
+        Partitioning(::datafusion_proto::protobuf::Partitioning),
+    }
 }
 /// Passthrough shuffle writer that emits the seekable Arrow IPC file format.
 /// Carries no output partitioning: like `ShuffleWriterExecNode`'s passthrough
@@ -609,6 +662,9 @@ pub struct ShuffleReaderExecNode {
     /// Optional coalesce metadata. Absent means "no coalesce" (legacy one-to-one read behavior).
     #[prost(message, optional, tag = "7")]
     pub coalesce: ::core::option::Option<CoalescePlan>,
+    /// The executors the locations in `partition` refer to by `executor_index`.
+    #[prost(message, repeated, tag = "8")]
+    pub executors: ::prost::alloc::vec::Vec<ExecutorEndpoint>,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -644,6 +700,9 @@ pub struct RangeShuffleReaderExecNode {
     /// partition wants; the consuming RangeFilterExec still does the exact trim.
     #[prost(message, repeated, tag = "6")]
     pub bounds: ::prost::alloc::vec::Vec<RangeBound>,
+    /// The executors the locations in `partition` refer to by `executor_index`.
+    #[prost(message, repeated, tag = "7")]
+    pub executors: ::prost::alloc::vec::Vec<ExecutorEndpoint>,
 }
 /// CoalescePartitionsRule output: groups upstream partitions into coalesced output partitions.
 /// Empty when no coalesce is applied (the optional field on the parent message is absent).
@@ -987,14 +1046,19 @@ pub struct PartitionLocation {
     /// partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
     #[prost(message, optional, tag = "2")]
     pub partition_id: ::core::option::Option<PartitionId>,
+    /// The executor, when this location is reported in a job status. Unset inside
+    /// a reader node, where `executor_index` identifies it.
     #[prost(message, optional, tag = "3")]
-    pub executor_meta: ::core::option::Option<ExecutorMetadata>,
+    pub executor_meta: ::core::option::Option<ExecutorEndpoint>,
     #[prost(message, optional, tag = "4")]
     pub partition_stats: ::core::option::Option<PartitionStats>,
     #[prost(uint64, optional, tag = "6")]
     pub file_id: ::core::option::Option<u64>,
     #[prost(bool, tag = "7")]
     pub is_sort_shuffle: bool,
+    /// Inside a reader node, the position of the executor in its `executors`.
+    #[prost(uint32, tag = "8")]
+    pub executor_index: u32,
 }
 /// Unique identifier for a materialized partition of data
 #[allow(clippy::all)]
@@ -1163,22 +1227,17 @@ pub mod operator_metric {
         OutputBatches(u64),
     }
 }
-/// Used by scheduler
+/// Where a reader fetches a partition from: only what a fetch needs, since a
+/// plan can refer to an executor from thousands of partition locations.
 #[allow(clippy::all)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutorMetadata {
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecutorEndpoint {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub host: ::prost::alloc::string::String,
     #[prost(uint32, tag = "3")]
     pub port: u32,
-    #[prost(uint32, tag = "4")]
-    pub grpc_port: u32,
-    #[prost(message, optional, tag = "5")]
-    pub specification: ::core::option::Option<ExecutorSpecification>,
-    #[prost(message, optional, tag = "6")]
-    pub os_info: ::core::option::Option<ExecutorOperatingSystemSpecification>,
 }
 /// Used for scheduler-executor
 /// communication

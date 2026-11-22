@@ -41,24 +41,19 @@ which is what lets Ballista recover from a lost executor by re-running only the 
 cluster, and plan the rest of a query from exact statistics. [Shuffle Design](../contributors-guide/shuffle.md)
 explains this model and its costs in detail.
 
-Ballista is adding a second, _pipelined_ execution model, in the style of Trino, as an experimental option chosen per
-job with `ballista.execution.mode = pipelined`. All of a job's tasks are placed up front and stages stream batches to
-each other through bounded in-memory queues, with nothing written to disk. The configuration and the pipelined
-exchange operators are on `main` ([#2670], [#2685]); the scheduler support that runs pipelined jobs end to end is in
-review in [#2657].
+Ballista also has a second, _pipelined_ execution model, in the style of Trino, as an experimental option chosen per
+job with `ballista.execution.mode = pipelined`. All of a job's tasks are placed up front and stages stream record
+batches to each other over Arrow Flight, with nothing written to disk. See
+[Pipelined Execution](../user-guide/pipelined-execution.md).
 
 DataFusion Distributed has one execution model, the pipelined one. Its documentation is clear about the trade-off:
 
 > If any node fails mid-query, the whole query fails; there are no retries. There's no persistence of intermediate
 > results, so queries can't checkpoint or resume from where they stopped.
 
-So the choice between them is no longer "batch versus interactive". Once pipelined mode is complete, a Ballista
-cluster will run long ETL jobs with the staged model and low-latency analytical queries with the pipelined model,
-side by side on the same scheduler and executors. DataFusion Distributed is designed for the second kind of workload.
-
-[#2657]: https://github.com/apache/datafusion-ballista/pull/2657
-[#2670]: https://github.com/apache/datafusion-ballista/pull/2670
-[#2685]: https://github.com/apache/datafusion-ballista/pull/2685
+So the choice between them is no longer "batch versus interactive". A Ballista cluster can run long ETL jobs with the
+staged model and low-latency analytical queries with the pipelined model, side by side on the same scheduler and
+executors. DataFusion Distributed is designed for the second kind of workload.
 
 ## Comparison
 
@@ -139,62 +134,76 @@ Both use the same query engine, both are open source, and both are improving qui
 two moving targets rather than a fixed property of either design, and expect them to narrow as each project adopts
 what works in the other.
 
+These are the Ballista and DataFusion Distributed columns of the results on the
+[benchmarking page](../contributors-guide/benchmarking/index.md), which has the versions under test, how each engine
+was configured, and how to reproduce the runs. Both pages are generated from the same result files in
+[`benchmarks/cluster/published`](https://github.com/apache/datafusion-ballista/tree/main/benchmarks/cluster/published).
+
 **Setup.** TPC-H at scale factor 1000, Parquet files compressed with zstd, read from Amazon S3. The tables are
 Hive-partitioned (`lineitem` and `orders` by date), and both projects declared the partition columns so that they
-prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 vCPU and 64 GiB each. Each query ran
-twice with no warm-up, so the first, cold run is included in the mean.
+prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 vCPU and 64 GiB each.
 
-- **Ballista** was built from [#2657] at commit `cb49f30f` (DataFusion 55.2.0). Each executor ran 8 tasks with a
-  memory pool of 70% of its memory, and `target_partitions` was 256. The same image ran the staged and pipelined
-  modes.
-- **DataFusion Distributed** was built from `main` at commit `90350275` (DataFusion 55.0.0), using the worker from
-  its `benchmarks/remote-worker` crate. Upstream's worker has an unbounded memory pool, so it was patched to give each
-  worker a fair spill pool of 70% of its memory, like Ballista's executors. A separate 8 vCPU, 32 GiB pod ran the
-  coordinator and the final stage of each query. Its settings were otherwise the defaults.
+- **Ballista** was built from `main`. Each executor ran 8 tasks with a memory pool of 70% of its memory, and
+  `target_partitions` was 256. The same image ran the staged and pipelined modes. See
+  [Ballista configuration](../contributors-guide/benchmarking/ballista.md).
+- **DataFusion Distributed** was built from `main`, using the worker from its `benchmarks/remote-worker` crate.
+  Upstream's worker has an unbounded memory pool, so it was patched to give each worker a fair spill pool of 70% of
+  its memory, like Ballista's executors. A separate 8 vCPU, 32 GiB pod ran the coordinator and the final stage of
+  each query. Its settings were otherwise the defaults. See
+  [DataFusion Distributed configuration](../contributors-guide/benchmarking/datafusion-distributed.md).
 
-Mean time per query, in seconds:
+<!-- BEGIN GENERATED BENCHMARK RESULTS -->
 
-| Query     | DataFusion Distributed | Ballista (pipelined) | Ballista (staged) |
-| --------- | ---------------------: | -------------------: | ----------------: |
-| Q1        |                    8.2 |                 13.8 |              14.8 |
-| Q2        |                   19.3 |                 13.5 |              36.3 |
-| Q3        |                    8.3 |                  7.3 |              17.9 |
-| Q4        |                    5.8 |                  6.1 |              10.9 |
-| Q5        |                   16.2 |                 13.9 |              41.4 |
-| Q6        |                    1.7 |                  1.4 |               1.7 |
-| Q7        |                   18.6 |                 18.7 |              35.1 |
-| Q8        |                   20.9 |                 14.1 |              21.6 |
-| Q9        |                   31.7 |                 24.2 |              35.8 |
-| Q10       |                   25.5 |                 22.0 |              45.1 |
-| Q11       |                    9.4 |                  4.4 |              18.7 |
-| Q12       |                    5.0 |                  4.4 |              10.1 |
-| Q13       |                    6.2 |                  5.8 |              10.8 |
-| Q14       |                    2.9 |                  1.4 |               7.0 |
-| Q15       |                   11.5 |                  6.9 |              10.6 |
-| Q16       |                   78.2 |                  5.1 |              13.3 |
-| Q17       |                   20.0 |                 15.4 |              23.6 |
-| Q18       |                   30.8 |                 35.4 |              55.4 |
-| Q19       |                    8.1 |                  7.4 |              12.1 |
-| Q20       |                   16.6 |                  6.3 |              15.6 |
-| Q21       |                   34.6 |                 45.9 |              68.6 |
-| Q22       |                    6.9 |                  5.4 |              10.5 |
-| **Total** |              **386.5** |            **278.8** |         **517.0** |
+Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations including the cold first one; DataFusion Distributed at `90350275` (DataFusion 55), mean of 3 iterations after an untimed warm-up. Times in seconds; lower is better.
+
+|     Query | Ballista staged (s) | Ballista pipelined (s) | DataFusion Distributed (s) |
+| --------: | ------------------: | ---------------------: | -------------------------: |
+|         1 |               14.59 |                  12.19 |                       7.85 |
+|         2 |               31.83 |                  13.32 |                      21.29 |
+|         3 |               17.32 |                   7.97 |                       8.85 |
+|         4 |               11.39 |                   5.54 |                       6.10 |
+|         5 |               34.79 |                  17.39 |                      18.89 |
+|         6 |                1.90 |                   1.29 |                       1.47 |
+|         7 |               17.22 |                   8.27 |                      19.31 |
+|         8 |               16.57 |                  18.20 |                      23.87 |
+|         9 |               34.09 |                  29.99 |                      35.92 |
+|        10 |               39.89 |                  21.85 |                      19.93 |
+|        11 |                9.62 |                   3.12 |                       7.47 |
+|        12 |                7.65 |                   3.52 |                       4.40 |
+|        13 |                9.93 |                   6.44 |                       6.38 |
+|        14 |                6.83 |                   1.40 |                       2.53 |
+|        15 |               13.13 |                   6.83 |                       7.68 |
+|        16 |               12.15 |                   5.37 |                      76.41 |
+|        17 |               21.81 |                  17.80 |                      22.06 |
+|        18 |               35.10 |                  28.98 |                      34.84 |
+|        19 |                8.84 |                   7.67 |                       8.26 |
+|        20 |               14.50 |                   6.44 |                      17.77 |
+|        21 |               35.71 |                  32.09 |                      39.06 |
+|        22 |               10.16 |                   5.22 |                       5.51 |
+| **Total** |          **405.00** |             **260.90** |                 **395.83** |
+
+<!-- END GENERATED BENCHMARK RESULTS -->
 
 **What the results show.**
 
-- Pipelined Ballista and DataFusion Distributed are close, which is expected of two pipelined engines on the same
-  query engine. Ballista was faster on 17 of the 22 queries and DataFusion Distributed on 5 (Q1, Q4, Q7, Q18, and
-  Q21). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.4x.
-- Most of the difference in the total is Q16. DataFusion Distributed runs the final `COUNT(DISTINCT)` aggregation and
-  anti join of Q16 on the coordinator, over 8 partitions. With the coordinator's 22.4 GiB memory pool, that stage
-  spilled 7.2 GB, and it was the only stage in the run that spilled. Excluding Q16, the geometric mean favours
-  pipelined Ballista by about 1.2x.
-- Staged Ballista was about 1.85x slower than pipelined Ballista in total, which is the latency cost of writing
-  every stage's output to disk before the next stage starts.
+<!-- BEGIN GENERATED COMPARISON FINDINGS -->
+
+- Pipelined Ballista was faster on 19 of the 22 queries and DataFusion Distributed on 3 (Q1, Q10, and Q13). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.4x.
+- The totals differ by 134.9 s, of which Q16 accounts for 71.0 s. Excluding Q16, the geometric mean favours pipelined Ballista by about 1.3x.
+- Staged Ballista took 1.55 times as long as pipelined Ballista in total.
+
+<!-- END GENERATED COMPARISON FINDINGS -->
+
+- DataFusion Distributed runs the final `COUNT(DISTINCT)` aggregation and anti join of Q16 on the coordinator, over
+  8 partitions, so that stage has only the coordinator's 22.4 GiB memory pool and must spill whatever does not fit.
+- The gap between staged and pipelined Ballista is the latency cost of writing every stage's output to disk before
+  the next stage starts.
 
 **Caveats.**
 
-- Each query ran only twice, so per-query differences of less than about 10% are within run-to-run variation.
+- Ballista's times are the mean of 2 iterations including the cold first one, while DataFusion Distributed's are
+  the mean of 3 iterations after an untimed warm-up. The difference in protocol favours DataFusion Distributed.
+  Per-query differences of less than about 10% are within run-to-run variation.
 - The setups are as close as we could make them, but not identical. DataFusion Distributed's coordinator is an extra
   pod that runs part of each query, while Ballista's scheduler runs no query work. The two projects were also on
   different patch releases of DataFusion.

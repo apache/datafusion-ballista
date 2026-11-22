@@ -36,7 +36,7 @@ use crate::error::BallistaError;
 use crate::extension::SessionConfigHelperExt;
 use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
-    Action, BallistaFunctionRegistry, ByteRange, ExecutorData, ExecutorMetadata,
+    Action, BallistaFunctionRegistry, ByteRange, ExecutorData, ExecutorEndpoint,
     ExecutorOperatingSystemSpecification, ExecutorSpecification, PartitionId,
     PartitionLocation, PartitionStats, PipelinedPartitionLocation, TaskDefinition,
 };
@@ -105,29 +105,32 @@ impl TryInto<Action> for protobuf::Action {
 impl TryInto<PipelinedPartitionLocation> for protobuf::PipelinedPartitionLocation {
     type Error = BallistaError;
 
-    fn try_into(self) -> Result<PipelinedPartitionLocation, Self::Error> {
-        Ok(PipelinedPartitionLocation {
-            partition_id: self
-                .partition_id
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "partition_id in PipelinedPartitionLocation is missing"
-                            .to_owned(),
-                    )
-                })?
-                .into(),
-            task_id: self.task_id as usize,
-            executor_meta: self
-                .executor_meta
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "executor_meta in PipelinedPartitionLocation is missing"
-                            .to_owned(),
-                    )
-                })?
-                .into(),
-        })
+    fn try_into(mut self) -> Result<PipelinedPartitionLocation, Self::Error> {
+        let executor = self.executor_meta.take().ok_or_else(|| {
+            BallistaError::General(
+                "executor_meta in PipelinedPartitionLocation is missing".to_owned(),
+            )
+        })?;
+        pipelined_location_with_executor(self, Arc::new(executor.into()))
     }
+}
+
+fn pipelined_location_with_executor(
+    location: protobuf::PipelinedPartitionLocation,
+    executor_meta: Arc<ExecutorEndpoint>,
+) -> Result<PipelinedPartitionLocation, BallistaError> {
+    Ok(PipelinedPartitionLocation {
+        partition_id: location
+            .partition_id
+            .ok_or_else(|| {
+                BallistaError::General(
+                    "partition_id in PipelinedPartitionLocation is missing".to_owned(),
+                )
+            })?
+            .into(),
+        task_id: location.task_id as usize,
+        executor_meta,
+    })
 }
 
 #[allow(clippy::from_over_into)]
@@ -159,37 +162,107 @@ fn foo(n: i64) -> Option<u64> {
 impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
     type Error = BallistaError;
 
-    fn try_into(self) -> Result<PartitionLocation, Self::Error> {
-        Ok(PartitionLocation {
-            map_partition_id: self.map_partition_id as usize,
-            partition_id: self
-                .partition_id
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "partition_id in PartitionLocation is missing.".to_owned(),
-                    )
-                })?
-                .into(),
-            executor_meta: self
-                .executor_meta
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "executor_meta in PartitionLocation is missing".to_owned(),
-                    )
-                })?
-                .into(),
-            partition_stats: self
-                .partition_stats
-                .ok_or_else(|| {
-                    BallistaError::General(
-                        "partition_stats in PartitionLocation is missing".to_owned(),
-                    )
-                })?
-                .into(),
-            file_id: self.file_id,
-            is_sort_shuffle: self.is_sort_shuffle,
-        })
+    fn try_into(mut self) -> Result<PartitionLocation, Self::Error> {
+        let executor = self.executor_meta.take().ok_or_else(|| {
+            BallistaError::General(
+                "executor_meta in PartitionLocation is missing".to_owned(),
+            )
+        })?;
+        location_with_executor(self, Arc::new(executor.into()))
     }
+}
+
+fn location_with_executor(
+    location: protobuf::PartitionLocation,
+    executor_meta: Arc<ExecutorEndpoint>,
+) -> Result<PartitionLocation, BallistaError> {
+    Ok(PartitionLocation {
+        map_partition_id: location.map_partition_id as usize,
+        partition_id: location
+            .partition_id
+            .ok_or_else(|| {
+                BallistaError::General(
+                    "partition_id in PartitionLocation is missing.".to_owned(),
+                )
+            })?
+            .into(),
+        executor_meta,
+        partition_stats: location
+            .partition_stats
+            .ok_or_else(|| {
+                BallistaError::General(
+                    "partition_stats in PartitionLocation is missing".to_owned(),
+                )
+            })?
+            .into(),
+        file_id: location.file_id,
+        is_sort_shuffle: location.is_sort_shuffle,
+    })
+}
+
+/// The executors of a reader node, shared by every location that refers to one.
+fn shared_executors(
+    executors: &[protobuf::ExecutorEndpoint],
+) -> Vec<Arc<ExecutorEndpoint>> {
+    executors
+        .iter()
+        .map(|executor| Arc::new(executor.clone().into()))
+        .collect()
+}
+
+fn executor_at(
+    executors: &[Arc<ExecutorEndpoint>],
+    index: u32,
+) -> Result<Arc<ExecutorEndpoint>, BallistaError> {
+    executors.get(index as usize).cloned().ok_or_else(|| {
+        BallistaError::General(format!(
+            "executor_index {index} is out of range for a reader node with {} executors",
+            executors.len()
+        ))
+    })
+}
+
+/// Decodes the partitions of a reader node, resolving each location's
+/// `executor_index` against the node's `executors`.
+pub(crate) fn reader_partitions_from_proto(
+    partitions: &[protobuf::ShuffleReaderPartition],
+    executors: &[protobuf::ExecutorEndpoint],
+) -> Result<Vec<Vec<PartitionLocation>>, BallistaError> {
+    let executors = shared_executors(executors);
+    partitions
+        .iter()
+        .map(|partition| {
+            partition
+                .location
+                .iter()
+                .map(|location| {
+                    let executor = executor_at(&executors, location.executor_index)?;
+                    location_with_executor(location.clone(), executor)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// [`reader_partitions_from_proto`] for a pipelined reader node.
+pub(crate) fn pipelined_reader_partitions_from_proto(
+    partitions: &[protobuf::PipelinedReaderPartition],
+    executors: &[protobuf::ExecutorEndpoint],
+) -> Result<Vec<Vec<PipelinedPartitionLocation>>, BallistaError> {
+    let executors = shared_executors(executors);
+    partitions
+        .iter()
+        .map(|partition| {
+            partition
+                .location
+                .iter()
+                .map(|location| {
+                    let executor = executor_at(&executors, location.executor_index)?;
+                    pipelined_location_with_executor(location.clone(), executor)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 impl TryInto<MetricValue> for operator_metric::Metric {
@@ -316,16 +389,12 @@ impl TryInto<MetricsSet> for protobuf::OperatorMetricsSet {
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
-    fn into(self) -> ExecutorMetadata {
-        ExecutorMetadata {
-            id: self.id,
-            host: self.host,
-            port: self.port as u16,
-            grpc_port: self.grpc_port as u16,
-            specification: self.specification.unwrap().into(),
-            os_info: self.os_info.unwrap().into(),
+impl From<protobuf::ExecutorEndpoint> for ExecutorEndpoint {
+    fn from(endpoint: protobuf::ExecutorEndpoint) -> Self {
+        Self {
+            id: endpoint.id,
+            host: endpoint.host,
+            port: endpoint.port as u16,
         }
     }
 }

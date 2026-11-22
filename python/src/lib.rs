@@ -22,6 +22,7 @@ mod cluster;
 mod codec;
 mod config;
 mod ffi_planner_workaround;
+mod python_query_exec;
 mod query_planner;
 mod utils;
 
@@ -31,12 +32,15 @@ pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
+    m.add("BALLISTA_VERSION", ballista_core::BALLISTA_VERSION)?;
+
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
 
     m.add_class::<config::PyBallistaConfigExtension>()?;
 
     m.add_class::<query_planner::PyBallistaExtension>()?;
+    m.add_class::<query_planner::PyBallistaPythonClientExtension>()?;
     m.add_class::<query_planner::PyBallistaLogicalExtensionCodec>()?;
     m.add_class::<query_planner::PyBallistaPhysicalExtensionCodec>()?;
     m.add_class::<query_planner::PyBallistaQueryPlanner>()?;

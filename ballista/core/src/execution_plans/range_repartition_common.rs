@@ -273,20 +273,24 @@ pub(super) mod test_util {
     use std::fmt::{self, Formatter};
     use std::sync::Arc;
 
-    use datafusion::arrow::array::RecordBatch;
-    use datafusion::arrow::datatypes::{Schema, SchemaRef};
+    use datafusion::arrow::array::{Float64Array, Int64Array, RecordBatch};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::common::Result;
     use datafusion::common::tree_node::TreeNodeRecursion;
-    use datafusion::execution::TaskContext;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::execution::{SessionStateBuilder, TaskContext};
+    use datafusion::physical_expr::expressions::col;
     use datafusion::physical_expr::{
         EquivalenceProperties, LexOrdering, Partitioning, PhysicalExpr, PhysicalSortExpr,
     };
     use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
-        SendableRecordBatchStream,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+        PlanProperties, SendableRecordBatchStream,
     };
+    use datafusion::prelude::SessionContext;
+    use futures::StreamExt;
 
     /// Message the synthetic panic will surface. Exposed so tests can
     /// assert-round-trip: after `guarded_scatter`'s payload downcast, this
@@ -394,23 +398,95 @@ pub(super) mod test_util {
             )))
         }
     }
+
+    /// `(v2 Float64, id Int64)`, both non-nullable.
+    pub(crate) fn schema_v2_id() -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("v2", DataType::Float64, false),
+            Field::new("id", DataType::Int64, false),
+        ]))
+    }
+
+    /// A batch over [`schema_v2_id`].
+    pub(crate) fn batch(
+        schema: &Arc<Schema>,
+        keys: Vec<f64>,
+        ids: Vec<i64>,
+    ) -> RecordBatch {
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float64Array::from(keys)),
+                Arc::new(Int64Array::from(ids)),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Ascending sort expression on the column `name`.
+    pub(crate) fn asc(schema: &Schema, name: &str) -> PhysicalSortExpr {
+        PhysicalSortExpr {
+            expr: col(name, schema).unwrap(),
+            options: Default::default(),
+        }
+    }
+
+    /// A one-partition memory source with no batches.
+    pub(crate) fn empty_input(schema: &Arc<Schema>) -> Arc<dyn ExecutionPlan> {
+        MemorySourceConfig::try_new_exec(&[vec![]], schema.clone(), None).unwrap()
+    }
+
+    pub(crate) fn session() -> Arc<SessionContext> {
+        Arc::new(SessionContext::new_with_state(
+            SessionStateBuilder::new().with_default_features().build(),
+        ))
+    }
+
+    /// Drains all K output partitions of `exec` **concurrently** and maps each
+    /// batch with `extract`. Draining them one after another can deadlock the
+    /// bounded scatter channels: while a test sequentially polls partition 0,
+    /// scatter tasks fill channels 1..K-1 to `CHANNEL_CAPACITY` and block on
+    /// send, never dropping their partition-0 senders. In production K
+    /// downstream tasks run concurrently and this pattern never arises.
+    pub(crate) async fn drain_concurrent<T: Send + 'static>(
+        exec: Arc<dyn ExecutionPlan>,
+        ctx: Arc<SessionContext>,
+        extract: fn(&RecordBatch) -> Vec<T>,
+    ) -> Vec<Vec<T>> {
+        let output_partitions = exec.output_partitioning().partition_count();
+        let streams: Vec<_> = (0..output_partitions)
+            .map(|p| exec.execute(p, ctx.task_ctx()).unwrap())
+            .collect();
+        let handles: Vec<_> = streams
+            .into_iter()
+            .map(|stream| {
+                tokio::spawn(async move {
+                    let batches: Vec<RecordBatch> = stream
+                        .collect::<Vec<Result<RecordBatch>>>()
+                        .await
+                        .into_iter()
+                        .map(|r| r.unwrap())
+                        .collect();
+                    batches.iter().flat_map(extract).collect()
+                })
+            })
+            .collect();
+        let mut per_output = Vec::with_capacity(output_partitions);
+        for handle in handles {
+            per_output.push(handle.await.unwrap());
+        }
+        per_output
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::test_util::cuts;
     use datafusion::arrow::array::{Float64Array, Int64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::expressions::col;
     use std::sync::Arc;
-
-    /// Boundaries as `Float64` scalars, which is what discovery produces.
-    fn cuts<const N: usize>(values: [f64; N]) -> Vec<ScalarValue> {
-        values
-            .into_iter()
-            .map(|v| ScalarValue::Float64(Some(v)))
-            .collect()
-    }
 
     fn asc(nulls_first: bool) -> SortOptions {
         SortOptions {

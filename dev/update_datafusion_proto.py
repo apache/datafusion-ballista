@@ -32,20 +32,25 @@
 # source resolved by `cargo metadata` and copies the `.proto` files in, rewriting
 # the one import path that differs from our flat layout.
 #
+# After updating the vendored files it also regenerates the Python gRPC stubs
+# (`python/dev/generate_proto.sh`), which CI checks are in sync with them.
+#
 # Usage:
-#   dev/update_datafusion_proto.py            # update the vendored files in place
+#   dev/update_datafusion_proto.py            # update the vendored files and stubs
 #   dev/update_datafusion_proto.py --check    # fail if vendored files are stale (CI)
 
 import argparse
 import difflib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.absolute()
 VENDOR_DIR = REPO_ROOT / "ballista" / "core" / "proto"
+PYTHON_DIR = REPO_ROOT / "python"
 
 # vendored file name -> (crate name, file name within the crate's `proto/` dir)
 #
@@ -97,6 +102,27 @@ def rewrite(content: str) -> str:
         'import "datafusion_common.proto";',
         content,
     )
+
+
+def generate_python_stubs():
+    """Regenerate the Python gRPC stubs the way CI checks them."""
+    if shutil.which("uv") is None:
+        sys.exit(
+            "error: `uv` not found, can not regenerate the Python gRPC stubs.\n"
+            "  Run `./dev/generate_proto.sh` from `python/` with `grpcio-tools` "
+            "installed."
+        )
+    result = subprocess.run(
+        ["uv", "run", "--no-project", "./dev/generate_proto.sh"], cwd=PYTHON_DIR
+    )
+    if result.returncode != 0:
+        sys.exit(
+            "error: regenerating the Python gRPC stubs failed.\n"
+            "  Install the dev dependencies with "
+            "`uv sync --dev --no-install-package ballista` in `python/`, "
+            "then run `./dev/generate_proto.sh` there."
+        )
+    print("regenerated Python gRPC stubs in python/python/ballista/proto")
 
 
 def main():
@@ -159,6 +185,9 @@ def main():
                 f"updated {dest.relative_to(REPO_ROOT)} "
                 f"from {chosen_crate}@{chosen_version}"
             )
+
+    if not args.check:
+        generate_python_stubs()
 
     if args.check and stale:
         sys.exit(

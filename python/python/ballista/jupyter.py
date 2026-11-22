@@ -218,6 +218,10 @@ class BallistaMagics(Magics):
                 self._ctx.register_parquet(table_name, file_name)
             elif file_type == "csv":
                 self._ctx.register_csv(table_name, file_name)
+            elif file_type == "json":
+                self._ctx.register_json(table_name, file_name)
+            elif file_type == "avro":
+                self._ctx.register_avro(table_name, file_name)
             else:
                 raise NotImplementedError(
                     "Currently not supporting the inserted file format"
@@ -319,9 +323,7 @@ class BallistaMagics(Magics):
         ]
 
         if self._last_result is not None:
-            status_lines.append(
-                "Last result: Available (access via '_' or '_last_result')"
-            )
+            status_lines.append("Last result: Available (access via '_last_result')")
 
         def _format_html_status_output(line: str) -> str:
             name, value = line.split(":", 1)
@@ -390,7 +392,7 @@ class BallistaMagics(Magics):
                     )
                 )
             else:
-                print("".join(val["content"] for val in lines))
+                print("\n".join(val["content"] for val in lines))
         except Exception as e:
             warnings.warn(f"Error listing tables: {e}")
 
@@ -498,16 +500,13 @@ Exploration:
     %ballista schema <table>  - Show table schema
 
 Table-register:
-    %register [format] [schema.table_name] [file_path] - Register a new table in the current Ballista Context
+    %register <format> <table_name> <file_path> - Register a table (parquet, csv, json, avro)
 
 Query:
     %sql <query>              - Execute single-line SQL query
 
-    %%sql [options] [var]     - Execute multi-line SQL query
-        Options:
-            --no-display      - Don't display results
-            --limit N         - Limit displayed rows (default: 50)
-        var                   - Store result in variable
+    %%sql [var]               - Execute multi-line SQL query,
+                                optionally storing the result in `var`
 
 History:
     %ballista history         - Show recent query history
@@ -534,14 +533,18 @@ Examples:
 
 def explain_visual(df: DataFrame, analyze: bool = False) -> ExecutionPlanVisualization:
     """
-    Generate a visual representation of the execution plan.
+    Generate a visual representation of the query plan.
 
-    This method creates an SVG visualization of the query execution plan,
-    which can be displayed directly in Jupyter notebooks.
+    This method creates an SVG visualization of the DataFrame's logical plan,
+    which can be displayed directly in Jupyter notebooks. The query is not
+    executed.
 
     Args:
         df: DataFrame to visualize.
-        analyze: If True, includes runtime statistics from actual execution.
+        analyze: Deprecated. It only labels the visualization; it does not
+            run the query or add runtime statistics, and passing ``True``
+            emits a ``DeprecationWarning``. Use ``df.explain(analyze=True)``
+            for runtime statistics.
 
     Returns:
         ExecutionPlanVisualization: An object that renders as SVG in Jupyter.
@@ -549,9 +552,17 @@ def explain_visual(df: DataFrame, analyze: bool = False) -> ExecutionPlanVisuali
     Example:
         >>> df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
         >>> explain_visual(df)  # Displays SVG in notebook
-        >>> viz = explain_visual(df, analyze=True)
+        >>> viz = explain_visual(df)
         >>> viz.save("plan.svg")  # Save to file
     """
+    if analyze:
+        warnings.warn(
+            "explain_visual(analyze=True) is deprecated: it does not run the "
+            "query or show runtime statistics. Use df.explain(analyze=True) "
+            "for runtime statistics.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     # Get the execution plan as a string representation
     # Note: explain() prints but doesn't return a string, so we use logical_plan()
     try:
@@ -572,12 +583,14 @@ def collect_with_progress(
     Collect results with progress indication.
 
     For long-running queries, this method provides progress updates
-    through a callback function or displays a progress bar in Jupyter.
+    through a callback function or displays elapsed time in Jupyter.
 
     Args:
         df: DataFrame to collect.
         callback: Optional function to call with progress updates.
-                 Signature: callback(status: str, progress: float)
+                 Signature: callback(status: str, progress: float).
+                 ``progress`` is ``-1.0`` while the query runs and ``1.0``
+                 when it completes.
         poll_interval: How often to check progress (seconds).
 
     Returns:
@@ -585,7 +598,7 @@ def collect_with_progress(
 
     Example:
         >>> def my_callback(status, progress):
-        ...     print(f"{status}: {progress:.1%}")
+        ...     print(status)
         >>> batches = collect_with_progress(df, callback=my_callback)
     """
     import threading

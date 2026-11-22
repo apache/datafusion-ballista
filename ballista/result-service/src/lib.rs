@@ -29,6 +29,8 @@
 mod http;
 mod metered;
 mod metrics;
+#[cfg(test)]
+mod test_util;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -206,9 +208,9 @@ fn server<B: ResultBackend>(
 mod tests {
     use super::*;
     use crate::metrics::NoopMetricsCollector;
+    use crate::test_util::fetch_partition_action;
     use arrow_flight::flight_service_client::FlightServiceClient;
     use arrow_flight::{FlightData, Ticket};
-    use ballista_core::JobId;
     use ballista_core::serde::protobuf;
     use ballista_core::serde::scheduler::Action as BallistaAction;
     use ballista_core::serving::BoxedFlightStream;
@@ -240,19 +242,7 @@ mod tests {
     }
 
     fn fetch_ticket() -> Ticket {
-        let action: protobuf::Action = BallistaAction::FetchPartition {
-            job_id: JobId::new("job"),
-            stage_id: 1,
-            partition_id: 0,
-            host: "executor".to_owned(),
-            port: 50051,
-            file_id: None,
-            layout: Default::default(),
-            file_kind: Default::default(),
-            byte_ranges: vec![],
-        }
-        .try_into()
-        .unwrap();
+        let action: protobuf::Action = fetch_partition_action().try_into().unwrap();
         Ticket::new(action.encode_to_vec())
     }
 

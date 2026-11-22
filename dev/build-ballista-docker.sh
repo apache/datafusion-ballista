@@ -30,7 +30,7 @@ docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ba
 docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-executor:latest" -f dev/docker/ballista-executor.Dockerfile .
 docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-result-service:latest" -f dev/docker/ballista-result-service.Dockerfile .
 
-if test -z "${CI}"; then
+if test -z "${CI:-}"; then
   docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-cli:latest" -f dev/docker/ballista-cli.Dockerfile .
   docker build --build-arg RELEASE_FLAG="${RELEASE_FLAG}" -t "apache/datafusion-ballista-benchmarks:latest" -f dev/docker/ballista-benchmarks.Dockerfile .
 fi
