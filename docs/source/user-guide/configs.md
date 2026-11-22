@@ -178,7 +178,11 @@ equality. Probe stages never wait: complete reports are used, otherwise bypassed
 Broadcast joins (such as TPC-H Q19) and partitioned fallback joins can use
 filters from a completed build. Each successful build task retains about 8–9 KB
 per filter in scheduler `TaskInfo` for the life of the job.
-Filters do not cross LIMIT or aggregates. `EXPLAIN ANALYZE` shows `rows_pruned`.
+Each probe stream samples its Bloom filter on batches 1, 17, 33, and so on,
+counting only nonempty batches. If more than half the sample passes, it skips
+Bloom checks until the next sample.
+Filters do not cross LIMIT or aggregates. `EXPLAIN ANALYZE` shows `rows_pruned`
+and `bloom_batches_skipped`.
 
 ## Shuffle Settings
 

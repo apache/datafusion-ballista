@@ -50,6 +50,7 @@ use parking_lot::Mutex;
 use crate::serde::protobuf::RuntimeFilterPayload;
 
 const BLOOM_BYTES: usize = 8192;
+const BLOOM_SAMPLE_INTERVAL: usize = 16;
 const MAX_VALUES: usize = 128;
 const MAX_BOUND_BYTES: usize = 128;
 const VERSION: u32 = 2;
@@ -392,7 +393,8 @@ impl ExecutionPlan for RuntimeFilterBuildExec {
 }
 
 /// Probe-side filtering. A missing payload passes through without evaluating
-/// the key; a complete payload is fixed for the lifetime of the task.
+/// the key. A complete payload is fixed for the lifetime of the task. Bloom
+/// probes periodically sample their pass rate to decide whether to keep checking.
 #[derive(Debug)]
 pub struct RuntimeFilterApplyExec {
     input: Arc<dyn ExecutionPlan>,
@@ -514,14 +516,39 @@ impl ExecutionPlan for RuntimeFilterApplyExec {
         };
         let key = self.key.clone();
         let pruned = MetricBuilder::new(&self.metrics).counter("rows_pruned", partition);
+        let skipped = filter.in_hashes.is_none().then(|| {
+            MetricBuilder::new(&self.metrics).counter("bloom_batches_skipped", partition)
+        });
+        let mut batch_in_window = 0;
+        let mut apply_bloom = true;
         let stream = input.map(move |batch| {
             let batch = batch?;
+            let sample = if let Some(skipped) = &skipped {
+                if batch.num_rows() == 0 {
+                    return Ok(batch);
+                }
+                let sample = batch_in_window == 0;
+                batch_in_window = (batch_in_window + 1) % BLOOM_SAMPLE_INTERVAL;
+                if !sample && !apply_bloom {
+                    skipped.add(1);
+                    return Ok(batch);
+                }
+                sample
+            } else {
+                false
+            };
             let keys = key.evaluate(&batch)?.into_array(batch.num_rows())?;
             let keep = with_hashes([&keys], &HASH_STATE, |hashes| {
                 Ok(BooleanArray::from_iter(hashes.iter().enumerate().map(
                     |(row, &hash)| Some(filter.contains(hash, keys.is_null(row))),
                 )))
             })?;
+            if sample {
+                apply_bloom = keep.true_count() <= batch.num_rows() / 2;
+                if !apply_bloom {
+                    return Ok(batch);
+                }
+            }
             let filtered = filter_record_batch(&batch, &keep)?;
             pruned.add(batch.num_rows() - filtered.num_rows());
             Ok(filtered)
@@ -704,6 +731,46 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_filter_bloom_resamples_after_skipping_batches() {
+        let mut filter = RuntimeFilter::default();
+        filter
+            .update(&(Arc::new(Int64Array::from_iter_values(0..256)) as ArrayRef))
+            .unwrap();
+        let payload = filter.to_proto(0).unwrap();
+        assert!(!payload.has_in_set);
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, true)]));
+        let batch = |key| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(vec![key]))],
+            )
+            .unwrap()
+        };
+        // The first batch passes. All later batches would be rejected by the Bloom.
+        let mut batches = vec![batch(Some(0))];
+        batches.extend(std::iter::repeat_n(batch(None), BLOOM_SAMPLE_INTERVAL + 1));
+        let scan = MemorySourceConfig::try_new_exec(&[batches], schema, None).unwrap();
+        let apply = RuntimeFilterApplyExec::try_new(
+            scan,
+            0,
+            Arc::new(Column::new("key", 0)),
+            Some(payload),
+        )
+        .unwrap();
+        let result =
+            collect_stream(apply.execute(0, SessionContext::new().task_ctx()).unwrap())
+                .await
+                .unwrap();
+        let rows: Vec<_> = result.iter().map(RecordBatch::num_rows).collect();
+        let mut expected = vec![1; BLOOM_SAMPLE_INTERVAL];
+        // Resampling batch 17 rejects its NULL, so batch 18 also uses the filter.
+        expected.extend([0, 0]);
+        assert_eq!(rows, expected);
     }
 
     #[test]
