@@ -19,6 +19,7 @@
 //! `crate::state::aqe::reuse_exchange`).
 
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
@@ -31,7 +32,6 @@ use crate::test_utils::{
     revive_graph_and_complete_next_stage_with_executor,
 };
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
@@ -79,8 +79,7 @@ async fn graph(ctx: &SessionContext, sql: &str) -> AdaptiveExecutionGraph {
         ctx,
         &plan,
         0,
-        None,
-        Arc::new(BallistaPhysicalExtensionCodec::default()),
+        SchedulerExtensions::default(),
     )
     .await
     .unwrap()

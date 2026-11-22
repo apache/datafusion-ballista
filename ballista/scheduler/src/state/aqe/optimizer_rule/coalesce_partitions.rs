@@ -147,6 +147,7 @@ use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use log::debug;
 
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::coalesce::{
     split_size_list_by_target_size, start_indices_to_partition_groups,
 };
@@ -160,7 +161,19 @@ use crate::state::aqe::execution_plan::{
 ///
 /// See module docs for design intent.
 #[derive(Debug, Default)]
-pub struct CoalescePartitionsRule;
+pub struct CoalescePartitionsRule {
+    /// Asked about operators Ballista doesn't know, see
+    /// [`AdaptiveRules::tolerates_partition_count_change`].
+    rules: Option<Arc<dyn AdaptiveRules>>,
+}
+
+impl CoalescePartitionsRule {
+    /// A rule that asks `rules` whether operators Ballista doesn't know
+    /// tolerate a coalesced partition count.
+    pub fn new(rules: Option<Arc<dyn AdaptiveRules>>) -> Self {
+        Self { rules }
+    }
+}
 
 impl PhysicalOptimizerRule for CoalescePartitionsRule {
     fn optimize(
@@ -213,7 +226,7 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
         // checks every operator between the stage root and a leaf, since each
         // of them runs over the coalesced partition count.
         let mut leaves: Vec<Arc<dyn ExecutionPlan>> = Vec::new();
-        if !collect_alignment_group(&input, &mut leaves) {
+        if !collect_alignment_group(&input, self.rules.as_deref(), &mut leaves) {
             debug!(
                 "[coalesce-rule] an operator of unknown partition-count sensitivity consumes a leaf; bail"
             );
@@ -369,10 +382,12 @@ impl PhysicalOptimizerRule for CoalescePartitionsRule {
 /// Collects the leaf `ExchangeExec`s under `node` into `leaves`.
 ///
 /// Returns `false` when an operator between `node` and one of those leaves
-/// is not known to [`tolerates_partition_count_change`]: the rule then has no
-/// basis for changing the partition count that operator sees.
+/// is neither on [`tolerates_partition_count_change`]'s list nor accepted by
+/// the embedder's `rules`: the rule then has no basis for changing the
+/// partition count that operator sees.
 fn collect_alignment_group(
     node: &Arc<dyn ExecutionPlan>,
+    rules: Option<&dyn AdaptiveRules>,
     leaves: &mut Vec<Arc<dyn ExecutionPlan>>,
 ) -> bool {
     if node.is::<ExchangeExec>() {
@@ -381,12 +396,15 @@ fn collect_alignment_group(
     }
     let leaves_before = leaves.len();
     for child in node.children() {
-        if !collect_alignment_group(child, leaves) {
+        if !collect_alignment_group(child, rules, leaves) {
             return false;
         }
     }
     let consumes_leaf = leaves.len() > leaves_before;
-    !consumes_leaf || tolerates_partition_count_change(node.as_ref())
+    !consumes_leaf
+        || tolerates_partition_count_change(node.as_ref())
+        || rules
+            .is_some_and(|rules| rules.tolerates_partition_count_change(node.as_ref()))
 }
 
 /// Operators that produce the same rows over any partitioning of their
@@ -396,9 +414,11 @@ fn collect_alignment_group(
 /// `ExecutionPlan` has no way to declare this, so the list is maintained by
 /// hand, like the whitelists in `ballista_core::execution_plans::plan_algebra`.
 /// Anything else, in particular an extension operator from a client that
-/// submitted its own physical plan, is assumed to depend on the count.
+/// submitted its own physical plan, is assumed to depend on the count unless
+/// the scheduler embedder's [`AdaptiveRules::tolerates_partition_count_change`]
+/// accepts it.
 #[allow(deprecated)]
-fn tolerates_partition_count_change(plan: &dyn ExecutionPlan) -> bool {
+pub(crate) fn tolerates_partition_count_change(plan: &dyn ExecutionPlan) -> bool {
     plan.is::<ProjectionExec>()
         || plan.is::<FilterExec>()
         || plan.is::<AggregateExec>()
