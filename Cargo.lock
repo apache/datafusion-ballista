@@ -1127,6 +1127,7 @@ dependencies = [
  "datafusion",
  "datafusion-proto",
  "datafusion-proto-common",
+ "flatbuffers",
  "futures",
  "log",
  "lru 0.19.0",
@@ -1147,6 +1148,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "zstd 0.14.3",
 ]
 
 [[package]]

@@ -20,12 +20,12 @@ use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
+use crate::shuffle_ipc::{ShuffleCompression, ShuffleEncoding, ShuffleStreamWriter};
 
 use datafusion::arrow::array::{ArrayRef, AsArray, GenericByteViewArray};
 use datafusion::arrow::datatypes::ByteViewType;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
-use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{SessionConfig, SessionState};
@@ -306,12 +306,37 @@ fn is_sparse<T: ByteViewType + ?Sized>(array: &GenericByteViewArray<T>) -> bool 
 /// Batches are read from the async stream and forwarded through a bounded
 /// channel to a `spawn_blocking` task that performs all synchronous file I/O,
 /// keeping the tokio worker thread unblocked.
+///
+/// The file is a plain arrow-ipc stream compressed with `compression_type`.
+/// Use [`write_shuffle_stream_to_disk`] to store offsets as lengths.
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &Path,
     disk_write_metric: &metrics::Time,
     channel_capacity: usize,
     compression_type: Option<CompressionType>,
+) -> Result<PartitionStats> {
+    write_shuffle_stream_to_disk(
+        stream,
+        path,
+        disk_write_metric,
+        channel_capacity,
+        ShuffleCompression::plain(compression_type),
+    )
+    .await
+}
+
+/// Stream data to disk in Arrow IPC format, compressed as `compression` says.
+///
+/// Like [`write_stream_to_disk`], but the file stores offsets as lengths when
+/// `compression` asks for it and the schema supports it, so it must be read
+/// back through [`crate::shuffle_ipc::ShuffleIpcReader`].
+pub async fn write_shuffle_stream_to_disk(
+    stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
+    path: &Path,
+    disk_write_metric: &metrics::Time,
+    channel_capacity: usize,
+    compression: ShuffleCompression,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
@@ -325,10 +350,8 @@ pub async fn write_stream_to_disk(
             BallistaError::IoError(e)
         })?);
 
-        let options = create_write_options(compression_type)?;
-
-        let mut writer =
-            StreamWriter::try_new_with_options(file, schema.as_ref(), options)?;
+        let encoding = ShuffleEncoding::try_new(schema.as_ref(), compression)?;
+        let mut writer = ShuffleStreamWriter::try_new(file, schema.as_ref(), &encoding)?;
 
         while let Some(batch) = rx.blocking_recv() {
             let timer = write_metric.timer();
