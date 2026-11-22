@@ -120,16 +120,14 @@ pub(crate) fn reuse_key(
     // Encodings run to the size of the stage plan, file lists included, and
     // a key is kept for every stage of the job, so only a 256-bit digest of
     // it is kept.
-    let bytes = match physical_plan_to_bytes_with_extension_codec(node, &codec) {
-        Ok(bytes) => bytes,
-        Err(e) => {
+    let bytes = physical_plan_to_bytes_with_extension_codec(node, &codec)
+        .inspect_err(|e| {
             debug!(
                 "exchange reuse: stage of exchange {} is not shared, its plan cannot be encoded: {e}",
                 exchange.plan_id()
-            );
-            return None;
-        }
-    };
+            )
+        })
+        .ok()?;
     Some(*blake3::hash(&bytes).as_bytes())
 }
 

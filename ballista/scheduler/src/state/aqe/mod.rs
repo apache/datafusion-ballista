@@ -151,17 +151,6 @@ pub(crate) struct AdaptiveExecutionGraph {
     logical_plan: Option<String>,
 }
 
-/// `planner`, matching stages for exchange reuse under `codec` when given.
-fn with_physical_codec(
-    planner: AdaptivePlanner,
-    codec: Option<Arc<dyn PhysicalExtensionCodec>>,
-) -> AdaptivePlanner {
-    match codec {
-        Some(codec) => planner.with_physical_codec(codec),
-        None => planner,
-    }
-}
-
 impl AdaptiveExecutionGraph {
     /// Creates a new `ExecutionGraph` from a physical execution plan.
     ///
@@ -169,7 +158,7 @@ impl AdaptiveExecutionGraph {
     /// and build the DAG structure needed for distributed execution.
     ///
     /// `physical_codec` is the codec the scheduler ships stages with, which
-    /// exchange reuse matches stages on; `None` uses the session's.
+    /// exchange reuse matches stages on.
     #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         scheduler_id: &str,
@@ -179,11 +168,11 @@ impl AdaptiveExecutionGraph {
         logical_plan: &LogicalPlan,
         queued_at: u64,
         rules: Option<&dyn AdaptiveRules>,
-        physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+        physical_codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> ballista_core::error::Result<Self> {
-        let planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules).await?;
-        let planner = with_physical_codec(planner, physical_codec);
+        let planner = AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules)
+            .await?
+            .with_physical_codec(physical_codec);
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
         Self::try_new_with_planner(
@@ -211,15 +200,15 @@ impl AdaptiveExecutionGraph {
         physical_plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
         rules: Option<&dyn AdaptiveRules>,
-        physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+        physical_codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> ballista_core::error::Result<Self> {
         let planner = AdaptivePlanner::try_new_from_physical(
             ctx,
             physical_plan,
             job_id.clone(),
             rules,
-        )?;
-        let planner = with_physical_codec(planner, physical_codec);
+        )?
+        .with_physical_codec(physical_codec);
 
         Self::try_new_with_planner(
             scheduler_id,

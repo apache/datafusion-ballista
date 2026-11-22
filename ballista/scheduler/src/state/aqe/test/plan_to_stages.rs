@@ -26,6 +26,7 @@ use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::JobId;
 use ballista_core::assert_plan;
 use ballista_core::execution_plans::SortShuffleWriterExec;
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::physical_plan::ExecutionPlan;
@@ -459,7 +460,7 @@ async fn newly_built_adaptive_graph_has_expected_state()
         &logical_plan,
         7,
         None,
-        None,
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
     )
     .await?;
 
