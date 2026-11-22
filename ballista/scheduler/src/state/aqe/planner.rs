@@ -48,6 +48,7 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::debug;
 use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
@@ -105,6 +106,10 @@ pub struct AdaptivePlanner {
     /// instead of running a stage of its own, by its key (see
     /// [`crate::state::aqe::reuse_exchange`]). Spark's AQE `stageCache`.
     reusable_stages: HashMap<ReuseKey, Arc<dyn ExecutionPlan>>,
+    /// The codec stages are encoded with to ship to executors, which
+    /// [`reuse_key`] encodes them with too. The session's codec unless
+    /// [`Self::with_physical_codec`] sets the scheduler's.
+    physical_codec: Arc<dyn PhysicalExtensionCodec>,
     runtime_filters: Option<super::runtime_filter_planner::RuntimeFilterPlanner>,
 }
 
@@ -145,8 +150,10 @@ impl AdaptivePlanner {
             .get::<ballista_core::config::BallistaConfig>()
             .is_some_and(|c| c.runtime_filter_enabled())
             .then(super::runtime_filter_planner::RuntimeFilterPlanner::default);
+        let physical_codec = session_state.config().ballista_physical_extension_codec();
         Ok(Self {
             runtime_filters,
+            physical_codec,
             stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
             session_state,
             physical_planner: planner.into(),
@@ -281,6 +288,22 @@ impl AdaptivePlanner {
             Self::default_optimizers_with(plan_id_generator, replan_optimizers),
         )
     }
+
+    /// Matches stages for exchange reuse on their encoding under `codec`, the
+    /// codec the scheduler ships stages with, instead of the session's.
+    ///
+    /// An embedder that registers its codec only with the scheduler
+    /// (`SchedulerConfig::override_physical_codec`) leaves the session with
+    /// Ballista's default codec, which cannot encode the embedder's
+    /// operators, so none of its stages would be shared.
+    pub(crate) fn with_physical_codec(
+        mut self,
+        codec: Arc<dyn PhysicalExtensionCodec>,
+    ) -> Self {
+        self.physical_codec = codec;
+        self
+    }
+
     /// Cancels a stage by its ID.
     ///
     /// # Arguments
@@ -566,7 +589,7 @@ impl AdaptivePlanner {
         if !config.ballista_reuse_exchange_enabled() {
             return Ok(self.runnable_exchanges());
         }
-        let codec = config.ballista_physical_extension_codec();
+        let codec = Arc::clone(&self.physical_codec);
 
         // A pass that doesn't resolve an exchange ends the loop, and each
         // pass that does resolves a pending one, so the plan's exchanges

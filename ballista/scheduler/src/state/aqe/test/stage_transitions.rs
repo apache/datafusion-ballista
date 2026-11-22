@@ -45,6 +45,7 @@ async fn test_aggregation_plan() -> Result<AdaptiveExecutionGraph> {
         &logical_plan,
         0,
         None,
+        None,
     )
     .await
 }

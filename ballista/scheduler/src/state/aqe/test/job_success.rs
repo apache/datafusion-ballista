@@ -61,6 +61,7 @@ async fn plan_job(sql: &str) -> Result<AdaptiveExecutionGraph> {
         &logical_plan,
         0,
         None,
+        None,
     )
     .await
 }
