@@ -2187,4 +2187,26 @@ mod test {
         assert!(err.to_string().contains("pipelined"), "{err}");
         assert_eq!(scheduler.cancelled(), [JOB_ID]);
     }
+
+    #[tokio::test]
+    async fn poll_job_until_successful_does_not_cancel_finished_pipelined_jobs() {
+        let finished = scripted(job_status::Status::Successful(SuccessfulJob {
+            pipelined_output_locations: vec![PipelinedPartitionLocation::default()],
+            ..Default::default()
+        }));
+        let scheduler = FakeScheduler::compatible(vec![finished]);
+        let url = scheduler.start().await;
+        let mut client = scheduler_client(url).await;
+
+        let err = poll_job_until_successful(
+            &mut client,
+            JOB_ID.into(),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("pipelined"), "{err}");
+        assert!(scheduler.cancelled().is_empty());
+    }
 }
