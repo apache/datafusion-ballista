@@ -42,11 +42,11 @@ clap = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
-once_cell = { version = "1.21.4", optional = true }
-prometheus = { version = "0.14", features = ["process"], optional = true }
+once_cell = { workspace = true, optional = true }
+prometheus = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tonic = { workspace = true }
 
 [dev-dependencies]
 prost = { workspace = true }
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true }

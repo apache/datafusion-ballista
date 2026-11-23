@@ -88,9 +88,9 @@ http = "1.4"
 itertools = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
-once_cell = { version = "1.21.4", optional = true }
+once_cell = { workspace = true, optional = true }
 parking_lot = { workspace = true }
-prometheus = { version = "0.14", features = ["process"], optional = true }
+prometheus = { workspace = true, optional = true }
 prost = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -123,7 +123,7 @@ serde_json = { workspace = true }
 socket2 = { version = "0.6", features = ["all"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true, optional = true }
