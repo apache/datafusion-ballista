@@ -162,6 +162,9 @@ impl PipelinedShuffleReaderExec {
             Partitioning::Hash(exprs, _) => {
                 Partitioning::Hash(exprs.clone(), selected.len())
             }
+            Partitioning::Grouped(grouped) => {
+                crate::storage_partitioning::select_groups(grouped, partitions)?
+            }
             Partitioning::RoundRobinBatch(_) => {
                 Partitioning::RoundRobinBatch(selected.len())
             }

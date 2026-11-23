@@ -349,6 +349,9 @@ impl DefaultDistributedPlanner {
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
                 }
+                Partitioning::Grouped(_) => Err(BallistaError::Internal(
+                    "Source grouping cannot be a repartition destination".into(),
+                )),
                 Partitioning::RoundRobinBatch(_)
                 | Partitioning::UnknownPartitioning(_) => {
                     // remove any other repartition from the distributed plan
