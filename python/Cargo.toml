@@ -68,7 +68,7 @@ ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", re
 # Remove once `datafusion-ffi` delegates file formats to
 # `DefaultLogicalExtensionCodec` in `ForeignLogicalExtensionCodec`.
 
-datafusion = { version = "=55.2.0", features = ["avro"] }
+datafusion = { version = "=55.3.0", features = ["avro"] }
 datafusion-ffi = { version = "=55.2.0" }
 datafusion-proto = { version = "=55.2.0" }
 datafusion-python = { version = "55.0.0", default-features = false }
