@@ -111,57 +111,24 @@ pub(crate) fn stages_read_whole(plan: &Arc<dyn ExecutionPlan>) -> Vec<usize> {
     found
 }
 
-/// The first `UnionExec` branch in the stage plan `plan` that a task given
-/// only some of the stage's partitions would run wrongly: a branch that fails
-/// [`branch_splits`]. The scheduler runs such a stage as one task instead,
-/// which runs every branch whole.
-///
-/// The adaptive planner can leave such a branch in the union's stage. The
-/// static planner gives it a stage of its own, so its stages never need this.
-pub(crate) fn unsplittable_union_branch(
-    plan: &Arc<dyn ExecutionPlan>,
-    resolver: Option<&dyn PartitionSliceableResolver>,
-) -> Option<Arc<dyn ExecutionPlan>> {
-    fn walk(
-        plan: &Arc<dyn ExecutionPlan>,
-        under_collect: bool,
-        resolver: Option<&dyn PartitionSliceableResolver>,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        // Below a collapse every task reads the whole input anyway, so a
-        // union there is never split.
-        if !under_collect && plan.is::<UnionExec>() {
-            return plan
-                .children()
-                .into_iter()
-                .find(|branch| !branch_splits(branch, resolver))
-                .cloned();
-        }
-        plan.children()
-            .into_iter()
-            .zip(child_scopes(plan, under_collect))
-            .find_map(|(child, collect)| walk(child, collect, resolver))
-    }
-    walk(plan, false, resolver)
-}
-
 /// Whether restriction can give a task any share of the `UnionExec` branch
 /// `branch`: none of it, which the union's index arithmetic relies on, and
-/// part of it, tried as its first partition alone.
+/// part of it, tried as its first partition alone. The planners give a branch
+/// that fails a stage of its own.
 ///
 /// A branch fails when it keeps partitions restricted to none, as one that
 /// merges its input into one partition, reads a broadcast or sets its own
 /// partition count does. It also fails over a leaf nothing can restrict that
 /// has more than one partition, which the rewriter refuses for every slice
-/// but the whole, so `[0]` catches it as any partial slice would.
-pub(crate) fn branch_splits(
-    branch: &Arc<dyn ExecutionPlan>,
-    resolver: Option<&dyn PartitionSliceableResolver>,
-) -> bool {
-    let restricts_to_nothing = restrict(branch.clone(), &[], false, resolver)
+/// but the whole, so `[0]` catches it as any partial slice would. No resolver
+/// is asked, so a node Ballista does not know fails unless it has one
+/// partition.
+pub(crate) fn branch_splits(branch: &Arc<dyn ExecutionPlan>) -> bool {
+    let restricts_to_nothing = restrict(branch.clone(), &[], false, None)
         .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0);
     restricts_to_nothing
         && (branch.properties().output_partitioning().partition_count() == 0
-            || restrict(branch.clone(), &[0], false, resolver).is_ok())
+            || restrict(branch.clone(), &[0], false, None).is_ok())
 }
 
 /// Recursive worker. `under_collect` is the scope inherited from ancestors:
@@ -318,9 +285,9 @@ fn ensure_leaf_runs_whole(
 /// branch that keeps partitions the task wasn't given would run them in this
 /// task too, returning rows another task returns as well.
 ///
-/// Binding runs a stage with such a branch as one task (see
-/// [`unsplittable_union_branch`]), so this only fails if binding and restriction
-/// disagree: it refuses the task rather than let it return rows twice.
+/// The planners give such a branch a stage of its own (see [`branch_splits`]),
+/// so this only fails if one left it in the union's stage anyway: it refuses
+/// the task rather than let it return rows twice.
 fn ensure_branch_restricted(
     branch: &Arc<dyn ExecutionPlan>,
     partitions: &[usize],
@@ -332,8 +299,8 @@ fn ensure_branch_restricted(
     plan_err!(
         "cannot restrict a `UnionExec` branch to partitions {partitions:?}: its \
          `{}` keeps a partition count of {count}, so the task would also run \
-         partitions another task owns. The scheduler should have run this stage \
-         as one task.",
+         partitions another task owns. The planner should have given this branch \
+         a stage of its own.",
         branch.name()
     )
 }
@@ -1279,8 +1246,8 @@ mod tests {
         assert_eq!(group_files(branches[0]), ["file0.parquet"]);
     }
 
-    /// Binding runs a stage with a branch that keeps its partitions as one
-    /// task. Should a task get only part of such a stage anyway, restriction
+    /// The planners give a branch that keeps its partitions a stage of its
+    /// own. Should a task get only part of a union with one anyway, restriction
     /// refuses it rather than let the branch return its rows in every task.
     #[test]
     fn a_union_branch_that_keeps_its_partitions_is_refused() {
@@ -1298,20 +1265,14 @@ mod tests {
             error,
             "Error during planning: cannot restrict a `UnionExec` branch to \
              partitions []: its `SortExec` keeps a partition count of 1, so the \
-             task would also run partitions another task owns. The scheduler \
-             should have run this stage as one task."
+             task would also run partitions another task owns. The planner \
+             should have given this branch a stage of its own."
         );
     }
 
-    /// A stage can be split between tasks unless one of its unions has a
-    /// branch that restriction can't cut to a task's share of it.
-    /// Each case names the top node of the first such branch.
+    /// Which union branches restriction can cut to a task's share of them.
     #[test]
-    fn unions_that_cannot_be_split_between_tasks() {
-        use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-        let union = |branches: Vec<Arc<dyn ExecutionPlan>>| -> Arc<dyn ExecutionPlan> {
-            UnionExec::try_new(branches).unwrap()
-        };
+    fn union_branches_that_split_between_tasks() {
         let broadcast: Arc<dyn ExecutionPlan> = Arc::new(
             ShuffleReaderExec::try_new_broadcast(
                 1,
@@ -1321,89 +1282,48 @@ mod tests {
             )
             .unwrap(),
         );
-        let sorted = || sorted_into_one_partition(scan_with_file_groups(2));
         let scan = || scan_with_file_groups(2);
 
-        let cases: Vec<(&str, Arc<dyn ExecutionPlan>, Option<&str>)> = vec![
-            ("no union", scan(), None),
-            ("scans", union(vec![scan(), scan()]), None),
+        let cases: Vec<(&str, Arc<dyn ExecutionPlan>, bool)> = vec![
+            ("a scan", scan(), true),
             (
                 "a one-partition unknown leaf",
-                union(vec![PayloadExec::leaf(&["p0"]), scan()]),
-                None,
+                PayloadExec::leaf(&["p0"]),
+                true,
             ),
             (
                 "an unknown leaf of two partitions",
-                union(vec![PayloadExec::leaf(&["p0", "p1"]), scan()]),
-                Some("PayloadExec"),
+                PayloadExec::leaf(&["p0", "p1"]),
+                false,
             ),
-            ("a sort", union(vec![sorted(), scan()]), Some("SortExec")),
-            (
-                "a broadcast",
-                union(vec![broadcast, scan()]),
-                Some("ShuffleReaderExec"),
-            ),
+            ("a sort", sorted_into_one_partition(scan()), false),
+            ("a broadcast", broadcast, false),
             (
                 "an unknown node that keeps its partitions",
-                union(vec![
-                    PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
-                    scan(),
-                ]),
-                Some("PayloadExec"),
+                PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
+                false,
             ),
             (
-                "a sort in a nested union",
-                union(vec![
-                    union(vec![sorted(), scan_with_file_groups(1)]),
-                    scan(),
-                ]),
-                Some("UnionExec"),
+                "a nested union of scans",
+                UnionExec::try_new(vec![scan(), scan()]).unwrap(),
+                true,
             ),
             (
-                "a union below a sort",
-                sorted_into_one_partition(union(vec![sorted(), scan()])),
-                None,
-            ),
-            (
-                "a union below a coalesce",
-                Arc::new(CoalescePartitionsExec::new(union(vec![sorted(), scan()]))),
-                None,
+                "a nested union with a sort",
+                UnionExec::try_new(vec![sorted_into_one_partition(scan()), scan()])
+                    .unwrap(),
+                false,
             ),
         ];
-        let actual: Vec<(&str, Option<String>)> = cases
+        let actual: Vec<(&str, bool)> = cases
             .iter()
-            .map(|(name, plan, _)| {
-                let branch = unsplittable_union_branch(plan, None);
-                (*name, branch.map(|branch| branch.name().to_string()))
-            })
+            .map(|(name, branch, _)| (*name, branch_splits(branch)))
             .collect();
-        let expected: Vec<(&str, Option<String>)> = cases
+        let expected: Vec<(&str, bool)> = cases
             .iter()
-            .map(|(name, _, branch)| (*name, branch.map(str::to_string)))
+            .map(|(name, _, splits)| (*name, *splits))
             .collect();
         assert_eq!(actual, expected);
-    }
-
-    /// The resolver the tasks are restricted with can split the unions over
-    /// nodes of your own that nothing else can.
-    #[test]
-    fn the_resolver_lets_a_union_over_nodes_of_your_own_be_split() {
-        let resolver = payload_resolver();
-        let scan = || scan_with_file_groups(2);
-        let over_leaf =
-            UnionExec::try_new(vec![PayloadExec::leaf(&["p0", "p1"]), scan()]).unwrap();
-        let over_node = UnionExec::try_new(vec![
-            PayloadExec::over(&["p0", "p1"], vec![scan()], &[]),
-            scan(),
-        ])
-        .unwrap();
-
-        assert_eq!(
-            [&over_leaf, &over_node].map(|plan| {
-                unsplittable_union_branch(plan, Some(resolver.as_ref())).is_none()
-            }),
-            [true, true]
-        );
     }
 
     /// `plan` is an empty in-memory source with `like`'s schema and no

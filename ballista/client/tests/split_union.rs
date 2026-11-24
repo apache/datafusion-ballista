@@ -79,9 +79,8 @@ mod split_union {
         "SELECT 1 AS a UNION ALL SELECT 2 UNION ALL SELECT 3",
         "SELECT 100 AS id UNION ALL SELECT id FROM test",
         "SELECT column1 AS id FROM (VALUES (10), (11)) UNION ALL SELECT id FROM test",
-        // Branches that merge their input into one partition, which the
-        // adaptive planner leaves in the union's stage. Every task would run
-        // such a branch, so the stage runs as one task.
+        // Branches that merge their input into one partition, which every
+        // task would run whole. Each gets a stage of its own.
         "SELECT id FROM test UNION ALL SELECT id FROM test ORDER BY id",
         "SELECT o_id FROM orders UNION ALL SELECT c_id FROM customers ORDER BY o_id",
         "(SELECT id FROM test ORDER BY id LIMIT 3) UNION ALL SELECT id FROM test",
@@ -89,8 +88,8 @@ mod split_union {
          UNION ALL SELECT o_id FROM orders",
         "SELECT count(*) AS c FROM orders UNION ALL SELECT count(*) FROM customers",
         // A filter over a one-row source, below a round-robin repartition
-        // that keeps its four partitions in every task: the stage runs as one
-        // task too.
+        // that keeps its four partitions in every task: a stage of its own
+        // too.
         "SELECT column1 AS id FROM (VALUES (10), (11)) WHERE column1 > 10 \
          UNION ALL SELECT id FROM test",
     ];

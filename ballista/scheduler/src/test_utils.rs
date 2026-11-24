@@ -1501,7 +1501,7 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
 }
 
 /// A `SortExec` on column `a` of `input` that merges it into one partition, as
-/// the adaptive planner leaves on each branch of a `UNION ALL ... ORDER BY`.
+/// DataFusion plans on each branch of a `UNION ALL ... ORDER BY`.
 pub fn sorted_into_one_partition(
     input: Arc<dyn ExecutionPlan>,
 ) -> Arc<dyn ExecutionPlan> {
