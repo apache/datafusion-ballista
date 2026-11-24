@@ -44,8 +44,8 @@ rust-version = "1.95.0"
 version = "56.0.0"
 
 [workspace.dependencies]
-arrow = { version = "60.0.0", features = ["ipc_compression"] }
-arrow-flight = { version = "60.0.0", features = ["flight-sql"] }
+arrow = { version = "60.2.0", features = ["ipc_compression"] }
+arrow-flight = { version = "60.2.0", features = ["flight-sql"] }
 ballista = { path = "ballista/client", version = "56.0.0" }
 ballista-api-types = { path = "ballista/api-types", version = "56.0.0" }
 ballista-core = { path = "ballista/core", version = "56.0.0" }
@@ -54,7 +54,7 @@ ballista-flight-sql = { path = "ballista/flight-sql", version = "56.0.0" }
 ballista-history = { path = "ballista/history", version = "56.0.0" }
 ballista-result-service = { path = "ballista/result-service", version = "56.0.0" }
 ballista-scheduler = { path = "ballista/scheduler", version = "56.0.0" }
-clap = { version = "4.5", features = ["derive", "cargo"] }
+clap = { version = "4.6", features = ["derive", "cargo"] }
 
 # Keep these as minor-version requirements rather than exact patch pins so a
 # DataFusion patch release can be picked up with a lockfile bump alone.
@@ -74,7 +74,7 @@ object_store = "0.14.2"
 ordered-float = "5"
 pastey = "0.2.3"
 prost = "0.14"
-rstest = { version = "0.28" }
+rstest = { version = "0.29" }
 tikv-jemallocator = { version = "0.7" }
 tonic = { version = "0.14" }
 tonic-build = { version = "0.14", default-features = false, features = [
