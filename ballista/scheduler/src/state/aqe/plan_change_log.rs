@@ -115,21 +115,24 @@ impl<'a> PlanChangeLog<'a> {
         pass: Pass,
         plan: &dyn ExecutionPlan,
     ) -> Self {
-        let start = Instant::now();
+        let mut overhead = Duration::ZERO;
         let changes = enabled.then(|| {
+            let start = Instant::now();
             let plan = render(plan);
-            Changes {
+            let changes = Changes {
                 seen: vec![digest(&plan)],
                 plan,
                 made: Vec::new(),
                 undone: Vec::new(),
-            }
+            };
+            overhead = start.elapsed();
+            changes
         });
         Self {
             job_id,
             pass,
             changes,
-            overhead: start.elapsed(),
+            overhead,
         }
     }
 
