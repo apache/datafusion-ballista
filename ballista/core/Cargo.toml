@@ -51,6 +51,7 @@ clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
+datasketches = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 lru = { version = "0.19", optional = true }

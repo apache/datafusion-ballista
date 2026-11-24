@@ -36,7 +36,7 @@ use crate::execution_plans::{
 use crate::extension::SessionConfigExt;
 use crate::utils;
 
-use crate::hll::HyperLogLog;
+use crate::hll::{HyperLogLog, HyperLogLogUnion};
 use crate::serde::protobuf::{
     ColumnSketch, ShuffleWritePartition, SketchType, TaskColumnStats,
 };
@@ -355,7 +355,7 @@ pub(crate) struct ColumnStatsCollector(Arc<Mutex<ColumnStatsTotals>>);
 struct ColumnStatsTotals {
     null_counts: Vec<u64>,
     /// `(column index, sketch)` for each sketched column.
-    sketches: Vec<(usize, HyperLogLog)>,
+    sketches: Vec<(usize, HyperLogLogUnion)>,
 }
 
 /// The columns a writer sketches: the plain column references among the hash
@@ -387,7 +387,7 @@ impl ColumnStatsCollector {
                 null_counts: vec![0; num_columns],
                 sketches: sketched
                     .iter()
-                    .map(|&column| (column, HyperLogLog::new(precision)))
+                    .map(|&column| (column, HyperLogLogUnion::new(precision)))
                     .collect(),
             };
         }
@@ -456,7 +456,7 @@ impl ColumnStatsCollector {
             if let Some(entry) = stats.get_mut(*column) {
                 entry.sketches.push(ColumnSketch {
                     r#type: SketchType::Hll as i32,
-                    data: sketch.as_bytes().to_vec(),
+                    data: sketch.to_sketch().to_bytes(),
                 });
             }
         }
@@ -516,9 +516,7 @@ impl Drop for ColumnStatsStream {
             }
             for ((_, slot), (_, sketch)) in total.sketches.iter_mut().zip(&self.sketches)
             {
-                // Both were made at the precision `reset` chose, so they merge.
-                let merged = slot.merge(sketch);
-                debug_assert!(merged, "stream sketch and total differ in precision");
+                slot.update(sketch);
             }
         }
     }
@@ -1804,10 +1802,9 @@ mod tests {
         let [sketch] = stats[0].sketches.as_slice() else {
             panic!("expected one sketch on the hash key, got {:?}", stats[0]);
         };
-        assert_eq!(sketch.data.len(), 1 << crate::hll::DEFAULT_PRECISION);
-        let distinct = crate::hll::HyperLogLog::from_bytes(&sketch.data)
-            .unwrap()
-            .count();
+        let hll = crate::hll::HyperLogLog::from_bytes(&sketch.data).unwrap();
+        assert_eq!(hll.precision(), crate::hll::DEFAULT_PRECISION);
+        let distinct = hll.count();
         assert!((95..=105).contains(&distinct), "estimated {distinct}");
         assert!(stats[1].sketches.is_empty());
         Ok(())
@@ -1828,10 +1825,9 @@ mod tests {
         let [sketch] = stats[0].sketches.as_slice() else {
             panic!("expected one sketch on the hash key, got {:?}", stats[0]);
         };
-        assert_eq!(sketch.data.len(), 1 << 10);
-        let distinct = crate::hll::HyperLogLog::from_bytes(&sketch.data)
-            .unwrap()
-            .count();
+        let hll = crate::hll::HyperLogLog::from_bytes(&sketch.data).unwrap();
+        assert_eq!(hll.precision(), 10);
+        let distinct = hll.count();
         // Standard error is 3.3% here.
         assert!((80..=120).contains(&distinct), "estimated {distinct}");
         Ok(())
