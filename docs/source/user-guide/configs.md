@@ -90,12 +90,9 @@ integration decides what should be decided when a query runs rather than when
 it's planned, such as which version of a table to read. To run hooks for Flight
 SQL clients, add them to the scheduler's session config.
 
-A hook must return a plan with the same schema. A client's plan is already
-optimized, so a hook that swaps a scan's source must use one that applies the
-scan's pushed-down filters, projection and limit the same way. Hooks don't run
-for plans the client or scheduler runs itself, such as `SHOW`, DDL or catalog
-queries, for a session whose query planner is replaced, or for a physical plan
-submitted directly. See `LogicalPlanHook` for details.
+See
+[Rewriting the Logical Plan When a Query Runs](extending-components.md#rewriting-the-logical-plan-when-a-query-runs)
+for how to write one and where hooks don't run.
 
 If information schema is enabled all configuration parameters could be retrieved or set using SQL;
 
