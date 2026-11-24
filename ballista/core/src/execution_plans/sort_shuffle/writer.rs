@@ -2383,8 +2383,9 @@ mod tests {
         let [sketch] = stats[0].sketches.as_slice() else {
             panic!("expected one sketch on the hash key, got {:?}", stats[0]);
         };
-        assert_eq!(sketch.data.len(), 1 << 10);
-        let distinct = HyperLogLog::from_bytes(&sketch.data).unwrap().count();
+        let hll = HyperLogLog::from_bytes(&sketch.data).unwrap();
+        assert_eq!(hll.precision(), 10);
+        let distinct = hll.count();
         // 1500 distinct values at a standard error of 3.3%.
         assert!((1200..=1800).contains(&distinct), "estimated {distinct}");
         Ok(())

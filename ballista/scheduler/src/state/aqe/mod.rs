@@ -52,6 +52,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::prelude::SessionConfig;
 use datafusion::scalar::ScalarValue;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -72,6 +73,8 @@ pub(crate) mod execution_plan;
 pub mod optimizer_rule;
 pub mod planner;
 pub(crate) mod reuse_exchange;
+mod runtime_filter;
+mod runtime_filter_planner;
 pub(crate) mod skew_join;
 #[cfg(test)]
 mod test;
@@ -111,6 +114,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     scheduler_id: Option<String>,
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
+    runtime_filters: Option<runtime_filter::RuntimeFilterRegistry>,
     /// ID for this job
     job_id: JobId,
     /// Job name, can be empty string
@@ -152,6 +156,9 @@ impl AdaptiveExecutionGraph {
     ///
     /// This will use the `DistributedPlanner` to break the plan into stages
     /// and build the DAG structure needed for distributed execution.
+    ///
+    /// `physical_codec` is the codec the scheduler ships stages with, which
+    /// exchange reuse matches stages on.
     #[allow(clippy::too_many_arguments)]
     pub async fn try_new(
         scheduler_id: &str,
@@ -161,9 +168,11 @@ impl AdaptiveExecutionGraph {
         logical_plan: &LogicalPlan,
         queued_at: u64,
         rules: Option<&dyn AdaptiveRules>,
+        physical_codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> ballista_core::error::Result<Self> {
-        let planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules).await?;
+        let planner = AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules)
+            .await?
+            .with_physical_codec(physical_codec);
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
         Self::try_new_with_planner(
@@ -180,7 +189,9 @@ impl AdaptiveExecutionGraph {
     /// Creates a new `ExecutionGraph` from an already-built physical plan.
     ///
     /// The plan is prepared and staged by [`AdaptivePlanner::try_new_from_physical`];
-    /// the graph has no logical plan to display.
+    /// the graph has no logical plan to display. `physical_codec` is as in
+    /// [`Self::try_new`].
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new_from_physical(
         scheduler_id: &str,
         job_id: &JobId,
@@ -189,13 +200,15 @@ impl AdaptiveExecutionGraph {
         physical_plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
         rules: Option<&dyn AdaptiveRules>,
+        physical_codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> ballista_core::error::Result<Self> {
         let planner = AdaptivePlanner::try_new_from_physical(
             ctx,
             physical_plan,
             job_id.clone(),
             rules,
-        )?;
+        )?
+        .with_physical_codec(physical_codec);
 
         Self::try_new_with_planner(
             scheduler_id,
@@ -244,8 +257,23 @@ impl AdaptiveExecutionGraph {
                 .collect();
         let stages = stages?;
 
+        let filter_config = session_config
+            .options()
+            .extensions
+            .get::<ballista_core::config::BallistaConfig>();
+        let runtime_filters = filter_config
+            .filter(|config| config.runtime_filter_enabled())
+            .map(|_| {
+                let mut registry = runtime_filter::RuntimeFilterRegistry::default();
+                for (&id, stage) in &stages {
+                    registry.register(id, stage.plan());
+                }
+                registry
+            });
+
         Ok(Self {
             planner,
+            runtime_filters,
             scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_owned(),
             job_name: job_name.to_owned(),
@@ -574,6 +602,9 @@ impl AdaptiveExecutionGraph {
                             self.session_config.clone(),
                             stage,
                         )?;
+                        if let Some(registry) = &mut self.runtime_filters {
+                            registry.register(stage_id, stage.plan());
+                        }
                         self.stages.insert(stage_id, stage);
                     }
                 }
@@ -639,8 +670,8 @@ impl AdaptiveExecutionGraph {
         }
     }
 
-    fn get_running_stage_id(&mut self, black_list: &[usize]) -> Option<usize> {
-        let mut running_stage_id = self.stages.iter().find_map(|(stage_id, stage)| {
+    fn find_running_stage_id(&self, black_list: &[usize]) -> Option<usize> {
+        self.stages.iter().find_map(|(stage_id, stage)| {
             if black_list.contains(stage_id) {
                 None
             } else if let ExecutionStage::Running(stage) = stage {
@@ -652,19 +683,40 @@ impl AdaptiveExecutionGraph {
             } else {
                 None
             }
-        });
+        })
+    }
 
-        // If no available tasks found in the running stage,
-        // try to find a resolved stage and convert it to the running stage
-        if running_stage_id.is_none() {
-            if self.revive() {
-                running_stage_id = self.get_running_stage_id(black_list);
-            } else {
-                running_stage_id = None;
+    fn prepare_runtime_filters(&mut self, id: usize) {
+        let Some(registry) = &mut self.runtime_filters else {
+            return;
+        };
+        let plan = self.stages[&id].plan_arc();
+        match registry.prepare(id, plan.clone(), &self.stages) {
+            Ok(prepared) if !Arc::ptr_eq(&prepared, &plan) => {
+                let ExecutionStage::Running(stage) = self.stages.get_mut(&id).unwrap()
+                else {
+                    unreachable!()
+                };
+                stage.replace_plan(prepared);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!(
+                    "Runtime filter unavailable for stage {id}; bypassing: {error}"
+                );
             }
         }
+    }
 
-        running_stage_id
+    fn get_running_stage_id(&mut self, black_list: &[usize]) -> Option<usize> {
+        if let Some(id) = self.find_running_stage_id(black_list) {
+            self.prepare_runtime_filters(id);
+            Some(id)
+        } else if self.revive() {
+            self.get_running_stage_id(black_list)
+        } else {
+            None
+        }
     }
 
     fn reset_stages_internal(
@@ -1597,13 +1649,11 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         let job_id = self.job_id.clone();
         let session_id = self.session_id.clone();
 
-        let mut next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                stage.available_tasks() > 0
-            } else {
-                false
-            }
-        }).map(|(stage_id, stage)| {
+        let ready_id = self.find_running_stage_id(&[]);
+        if let Some(id) = ready_id {
+            self.prepare_runtime_filters(id);
+        }
+        let mut next_task = ready_id.and_then(|id| self.stages.get_mut(&id).map(|stage| (id, stage))).map(|(stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
                 use ballista_core::serde::scheduler::TaskKey;
 
@@ -1642,7 +1692,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
                 let key = TaskKey {
                     job_id,
-                    stage_id: *stage_id,
+                    stage_id,
                     task_id,
                 };
 

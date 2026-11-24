@@ -166,11 +166,15 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 /// Contains the execution graph and cached data to improve performance
 /// when scheduling tasks for the job.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct JobInfoCache {
     /// The execution graph for this job, protected by a read-write lock.
     pub execution_graph: Arc<RwLock<ExecutionGraphBox>>,
     /// Cached job status for quick access.
     pub status: Option<job_status::Status>,
+    /// The resolver the job's tasks are restricted with, so binding can tell
+    /// which stages a task may run only part of.
+    pub(crate) partition_sliceable_resolver: Option<Arc<dyn PartitionSliceableResolver>>,
 }
 
 impl JobInfoCache {
@@ -181,7 +185,17 @@ impl JobInfoCache {
         Self {
             execution_graph: Arc::new(RwLock::new(graph)),
             status,
+            partition_sliceable_resolver: None,
         }
+    }
+
+    /// Sets the resolver the job's tasks are restricted with.
+    pub(crate) fn with_partition_sliceable_resolver(
+        mut self,
+        resolver: Option<Arc<dyn PartitionSliceableResolver>>,
+    ) -> Self {
+        self.partition_sliceable_resolver = resolver;
+        self
     }
 }
 
@@ -378,6 +392,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             logical_plan,
                             queued_at,
                             self.adaptive_rules.as_deref(),
+                            self.codec.physical_extension_codec_arc(),
                         )
                         .await?,
                     ) as ExecutionGraphBox
@@ -419,6 +434,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         physical_plan.clone(),
                         queued_at,
                         self.adaptive_rules.as_deref(),
+                        self.codec.physical_extension_codec_arc(),
                     )?) as ExecutionGraphBox
                 } else {
                     debug!("Using static query planner for physical-plan job submission");
@@ -449,8 +465,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .submit_job(job_id.to_owned(), &graph, subscriber)
             .await?;
         graph.revive();
-        self.active_job_cache
-            .insert(job_id.to_owned(), JobInfoCache::new(graph));
+        self.active_job_cache.insert(
+            job_id.to_owned(),
+            JobInfoCache::new(graph).with_partition_sliceable_resolver(
+                self.partition_sliceable_resolver.clone(),
+            ),
+        );
 
         Ok(())
     }
@@ -1644,6 +1664,7 @@ mod tests {
             &plan,
             0,
             None,
+            Arc::new(ballista_core::serde::BallistaPhysicalExtensionCodec::default()),
         )
         .await?;
         graph.revive();

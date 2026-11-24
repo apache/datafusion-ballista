@@ -224,6 +224,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
     pub fn physical_extension_codec(&self) -> &dyn PhysicalExtensionCodec {
         self.physical_extension_codec.as_ref()
     }
+
+    /// Returns a shared handle to the physical extension codec, for holders
+    /// that outlive this codec's borrow.
+    pub fn physical_extension_codec_arc(&self) -> Arc<dyn PhysicalExtensionCodec> {
+        Arc::clone(&self.physical_extension_codec)
+    }
 }
 
 /// Logical extension codec for Ballista-specific plan nodes.

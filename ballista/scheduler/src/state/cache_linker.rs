@@ -98,6 +98,17 @@ enum CacheClaim {
 /// A concurrent submission can change a key between lookup and claim.
 const CLAIM_ATTEMPTS: usize = 4;
 
+/// Why a cache build ends when its session is removed.
+const SESSION_CLOSED: &str = "its session was closed";
+
+/// Why a query whose session was removed while it ran fails when it loses a
+/// cache: it is not rebuilt for a removed session.
+fn session_closed_rebuild() -> String {
+    format!(
+        "{CACHE_DATA_LOST} after its session was closed, so it cannot be rebuilt; retry the query"
+    )
+}
+
 /// What waits on a build job.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Waiter {
@@ -123,6 +134,9 @@ pub(crate) struct Released {
 pub(crate) struct JobReads {
     pub(crate) queued_at: u64,
     pub(crate) reads: Vec<ResolvedRead>,
+    /// Its session was removed while it ran. A cache it then loses is not
+    /// rebuilt, as nothing would remove an entry made for a removed session.
+    pub(crate) session_closed: bool,
 }
 
 impl JobReads {
@@ -141,9 +155,31 @@ struct Inner {
     dependents: HashMap<JobId, HashSet<Waiter>>,
     /// Running job -> the caches it reads.
     reads: HashMap<JobId, JobReads>,
+    /// Builds dropped with their session while running jobs still read them;
+    /// their data is cleaned up once no running job does.
+    orphaned: HashSet<JobId>,
+}
+
+/// What a job's end leaves to do.
+pub(crate) struct Ended {
+    /// The caches it read.
+    pub(crate) reads: Vec<ResolvedRead>,
+    /// Whether it is still a build in flight, held, or waited on.
+    pub(crate) linked: bool,
+    /// Builds dropped with their session that no running job reads any more,
+    /// whose data can now be cleaned up.
+    pub(crate) unread: Vec<JobId>,
 }
 
 impl Inner {
+    /// Whether a running job reads the output of `build`.
+    fn is_read(&self, build: &JobId) -> bool {
+        self.reads
+            .values()
+            .flat_map(|job_reads| &job_reads.reads)
+            .any(|read| &read.materializing_job == build)
+    }
+
     /// Whether `job` still runs and reads `input`.
     fn still_reads(&self, job: &JobId, input: usize) -> bool {
         self.reads
@@ -304,9 +340,9 @@ impl CacheLinker {
         }
     }
 
-    /// `job` ended: returns its cache reads, and whether it is still a build in
-    /// flight, held, or waited on.
-    pub(crate) fn job_ended(&self, job: &JobId) -> (Vec<ResolvedRead>, bool) {
+    /// `job` ended: its cache reads, whether it is still linked, and the builds
+    /// dropped with their session that it was the last to read.
+    pub(crate) fn job_ended(&self, job: &JobId) -> Ended {
         let mut inner = self.inner.lock();
         let reads = inner
             .reads
@@ -316,7 +352,54 @@ impl CacheLinker {
         let linked = inner.inflight.contains_key(job)
             || inner.pending.contains_key(job)
             || inner.dependents.contains_key(job);
-        (reads, linked)
+        // Every orphan is checked, not just the builds `job` read: a read moves
+        // to a rebuild's output, so the build it read before is read by no one.
+        let orphaned = std::mem::take(&mut inner.orphaned);
+        let (still_read, unread): (HashSet<JobId>, HashSet<JobId>) =
+            orphaned.into_iter().partition(|build| inner.is_read(build));
+        inner.orphaned = still_read;
+        Ended {
+            reads,
+            linked,
+            unread: unread.into_iter().collect(),
+        }
+    }
+
+    /// Marks the running jobs reading a cache of `session_id`, which is being
+    /// removed, so a cache they lose from now on is not rebuilt.
+    pub(crate) fn close_session_reads(&self, session_id: &str) {
+        for job_reads in self.inner.lock().reads.values_mut() {
+            if job_reads
+                .reads
+                .iter()
+                .any(|read| read.key.session_id == session_id)
+            {
+                job_reads.session_closed = true;
+            }
+        }
+    }
+
+    /// A build in flight for a cache of `session_id`, a held one first: failing
+    /// it fails what waits on it without cancelling a running job.
+    pub(crate) fn inflight_of(&self, session_id: &str) -> Option<(JobId, CacheKey)> {
+        let inner = self.inner.lock();
+        inner
+            .inflight
+            .iter()
+            .filter(|(_, key)| key.session_id == session_id)
+            .min_by_key(|(job, _)| !inner.pending.contains_key(*job))
+            .map(|(job, key)| (job.clone(), key.clone()))
+    }
+
+    /// `builds` were dropped with their session: returns those no running job
+    /// reads, whose data can be cleaned up now, and keeps the rest until their
+    /// last reader ends.
+    pub(crate) fn orphan(&self, builds: Vec<JobId>) -> Vec<JobId> {
+        let mut inner = self.inner.lock();
+        let (read, unread): (Vec<JobId>, Vec<JobId>) =
+            builds.into_iter().partition(|build| inner.is_read(build));
+        inner.orphaned.extend(read);
+        unread
     }
 }
 
@@ -582,6 +665,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             JobReads {
                 queued_at: job.queued_at,
                 reads,
+                session_closed: false,
             },
         );
         debug!("Submitting cache job {} ({})", job.job_id, job.job_name);
@@ -595,7 +679,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             admission: job.admission.clone(),
         };
         if let Err(e) = sender.post_event(event).await {
-            self.cache_linker.job_ended(&job.job_id);
+            let ended = self.cache_linker.job_ended(&job.job_id);
+            self.clean_up_builds(ended.unread);
             self.fail_pending(&job, &format!("failed to submit: {e}"), sender)
                 .await;
         }
@@ -640,7 +725,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         end: JobEnd<'_>,
         sender: &EventSender<QueryStageSchedulerEvent>,
     ) {
-        let (reads, linked) = self.cache_linker.job_ended(job_id);
+        let Ended {
+            reads,
+            linked,
+            unread,
+        } = self.cache_linker.job_ended(job_id);
+        self.clean_up_builds(unread);
         if let JobEnd::Failed(reason) = end
             && reason.contains(CACHE_DATA_LOST)
         {
@@ -694,6 +784,61 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    /// Drops the `DataFrame::cache()` data of `session_id`, which is being
+    /// removed. Its built caches are gone at once for new queries, and their
+    /// data is cleaned up once no running query reads it. Its builds still in
+    /// flight are cancelled, and what waits on them fails. Using the session
+    /// again builds its caches anew.
+    pub(crate) async fn remove_session_caches(
+        &self,
+        session_id: &str,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        // First, so a query reading one of these caches that loses it from now
+        // on fails rather than rebuild it for the removed session.
+        self.cache_linker.close_session_reads(session_id);
+        // A build fails with what waits on it, held builds included, so look
+        // again each time rather than walk a list taken up front.
+        //
+        // A submission on this session between claiming a build (`track`) and
+        // holding it (`register`) has its claim given back and its build job
+        // cancelled before that job is queued. The submission then submits the
+        // build anyway, whose output is cleaned up as an unclaimed job's, and
+        // its query fails with a cache-miss error asking for a retry. A narrow
+        // race, left as is.
+        while let Some((build, key)) = self.cache_linker.inflight_of(session_id) {
+            match self.cache_linker.cancel(&build) {
+                Some(held) => self.fail_pending(&held, SESSION_CLOSED, sender).await,
+                None => {
+                    self.fail_cache_job(&build, Some(&key), SESSION_CLOSED, sender)
+                        .await;
+                    let event = QueryStageSchedulerEvent::JobCancel(build.clone());
+                    if let Err(e) = sender.post_event(event).await {
+                        warn!("failed to cancel cache build {build}: {e}");
+                    }
+                }
+            }
+        }
+        let removed = self.cache_state.remove_session(session_id).await?;
+        let builds = removed
+            .into_iter()
+            .map(|(_, cache)| cache.materializing_job)
+            .collect();
+        self.clean_up_builds(self.cache_linker.orphan(builds));
+        Ok(())
+    }
+
+    /// Cleans up the data of dropped `builds`, after the usual delay for a
+    /// finished job's data.
+    fn clean_up_builds(&self, builds: Vec<JobId>) {
+        for build in builds {
+            self.executor_manager.clean_up_job_data_delayed(
+                build,
+                self.config.finished_job_data_clean_up_interval_seconds,
+            );
+        }
+    }
+
     /// A running job lost the cache data it reads under `inputs`, and its stages
     /// wait for it: rebuilds those caches and provides them again, or fails the
     /// job. On its own task, off the event loop.
@@ -734,6 +879,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         inputs: &[usize],
         sender: &EventSender<QueryStageSchedulerEvent>,
     ) -> std::result::Result<(), String> {
+        if job_reads.session_closed {
+            return Err(session_closed_rebuild());
+        }
         // Every input is checked before any build is dropped or claimed, so a
         // job that cannot recover leaves the healthy ones as they are.
         let mut reads = Vec::with_capacity(inputs.len());
@@ -811,14 +959,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         sender: &EventSender<QueryStageSchedulerEvent>,
     ) {
         let read = self.cache_linker.reads_of(job_id).and_then(|job_reads| {
-            Some((job_reads.queued_at, job_reads.read(input)?.clone()))
+            let read = job_reads.read(input)?.clone();
+            Some((job_reads.queued_at, job_reads.session_closed, read))
         });
-        let Some((queued_at, read)) = read else {
+        let Some((queued_at, session_closed, read)) = read else {
             self.fail_if_running(job_id, "it has no record of the cache it lost", sender)
                 .await;
             return;
         };
         let reason = match self.cache_state.lookup(&read.key).await {
+            // The session was removed while this rebuild ran: drop what it
+            // built rather than leave it to a session nothing will remove.
+            Ok(Some(cache)) if session_closed => {
+                if let Err(e) = self
+                    .invalidate_build(&read.key, &cache.materializing_job)
+                    .await
+                {
+                    warn!("failed to drop cache {:?}: {e:?}", read.key);
+                }
+                session_closed_rebuild()
+            }
             Ok(Some(cache)) if cache.schema == read.written => {
                 self.cache_linker.input_rebuilt(
                     job_id,
@@ -1030,9 +1190,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
-    /// Drops `key`'s entry while it is still `materializing_job`'s, and cleans up
-    /// that build's data after the usual delay for a finished job's data, which
-    /// lets a job still reading it finish.
+    /// Drops `key`'s entry while it is still `materializing_job`'s. That build's
+    /// data is cleaned up once no running job reads it, after the usual delay
+    /// for a finished job's data. A job that looked the entry up but records
+    /// its reads only after this is not counted; if it outlives the delay it
+    /// loses the data, and recovers or fails cleanly as for any lost cache.
     async fn invalidate_build(
         &self,
         key: &CacheKey,
@@ -1044,10 +1206,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .await?
             .is_some()
         {
-            self.executor_manager.clean_up_job_data_delayed(
-                materializing_job.clone(),
-                self.config.finished_job_data_clean_up_interval_seconds,
-            );
+            let unread = self.cache_linker.orphan(vec![materializing_job.clone()]);
+            self.clean_up_builds(unread);
         }
         Ok(())
     }
@@ -1108,15 +1268,17 @@ mod tests {
     use crate::test_utils::{
         MetricEvent, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
         aggregation_logical_plan, execution_failure, failed_statuses,
-        failing_task_runner, fetch_partition_failure,
+        failing_task_runner, fetch_partition_failure, test_cluster_context,
     };
     use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
     use ballista_core::extension::BallistaCacheNode;
     use ballista_core::serde::protobuf::MultiTaskDefinition;
     use ballista_core::serde::protobuf::job_status::Status;
 
+    use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::datatypes::Schema;
     use datafusion::logical_expr::{Extension, LogicalPlanBuilder};
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
     use std::time::Duration;
 
@@ -1524,6 +1686,174 @@ mod tests {
             .map(|read| shares_a_cache(&reads, read))
             .collect();
         assert_eq!(actual, shared);
+    }
+
+    /// A build dropped with its session is cleaned up at once if no running job
+    /// reads it, and otherwise once the last job reading it ends.
+    #[test]
+    fn a_build_dropped_with_its_session_is_freed_once_unread() {
+        let linker = CacheLinker::default();
+        let read = ResolvedRead {
+            key: CacheKey::new("session", "c1"),
+            materializing_job: JobId::new("read-build"),
+            input_id: EXTERNAL_STAGE_ID_BASE,
+            cache: None,
+            written: Arc::new(Schema::empty()),
+        };
+        let reader = JobId::new("reader");
+        linker.record_reads(
+            &reader,
+            JobReads {
+                queued_at: 0,
+                reads: vec![read],
+                session_closed: false,
+            },
+        );
+
+        let unread =
+            linker.orphan(vec![JobId::new("read-build"), JobId::new("unread-build")]);
+        assert_eq!(unread, vec![JobId::new("unread-build")]);
+        assert!(
+            linker.job_ended(&JobId::new("other")).unread.is_empty(),
+            "still read"
+        );
+        assert_eq!(
+            linker.job_ended(&reader).unread,
+            vec![JobId::new("read-build")]
+        );
+    }
+
+    /// Dropping a cache while a job reads it keeps the build's data until that
+    /// job ends: the entry is gone at once, but the build is orphaned rather
+    /// than cleaned up under its reader.
+    #[tokio::test]
+    async fn a_dropped_cache_keeps_its_data_while_a_job_reads_it() {
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_default_scheduler_endpoint(
+                test_cluster_context(),
+                BallistaCodec::default(),
+            );
+        let key = CacheKey::new("session", "c1");
+        let build = JobId::new("build");
+        state
+            .cache_state
+            .begin_materialization(key.clone(), build.clone())
+            .await
+            .unwrap();
+        state
+            .cache_state
+            .complete_materialization(
+                key.clone(),
+                build.clone(),
+                Arc::new(Schema::empty()),
+                vec![],
+            )
+            .await
+            .unwrap();
+        let reader = JobId::new("reader");
+        let read = ResolvedRead {
+            key: key.clone(),
+            materializing_job: build.clone(),
+            input_id: EXTERNAL_STAGE_ID_BASE,
+            cache: None,
+            written: Arc::new(Schema::empty()),
+        };
+        state.cache_linker.record_reads(
+            &reader,
+            JobReads {
+                queued_at: 0,
+                reads: vec![read],
+                session_closed: false,
+            },
+        );
+
+        state.invalidate_build(&key, &build).await.unwrap();
+
+        assert!(state.cache_state.lookup(&key).await.unwrap().is_none());
+        assert!(
+            state.cache_linker.inner.lock().orphaned.contains(&build),
+            "its data is kept for the reader"
+        );
+        assert_eq!(state.cache_linker.job_ended(&reader).unread, vec![build]);
+    }
+
+    /// Removing a session while its cache is being built cancels the build, and
+    /// the query waiting on it fails naming the closed session.
+    #[tokio::test]
+    async fn removing_a_session_fails_queries_waiting_on_its_builds() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let read = test.submit("query", &plan).await.unwrap();
+
+        test.remove_session("session").await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains("its session was closed"), "{error}");
+        let key = CacheKey::new("session", "c1");
+        assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
+    }
+
+    /// Removing a session while its nested caches are being built: `c1`'s build
+    /// runs, and `c2`'s is held for it. Both are given up, the query waiting on
+    /// them fails naming the closed session, and neither cache is left.
+    #[tokio::test]
+    async fn removing_a_session_fails_queries_waiting_on_nested_builds() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c2", cache_over("c1", aggregation_logical_plan(2)));
+        let read = test.submit("query", &plan).await.unwrap();
+
+        test.remove_session("session").await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(error.contains("its session was closed"), "{error}");
+        for cache_id in ["c1", "c2"] {
+            let key = CacheKey::new("session", cache_id);
+            assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
+        }
+    }
+
+    /// Removing a session drops its built caches, but a query already reading
+    /// one finishes, and using the session again builds the cache anew.
+    #[tokio::test]
+    async fn removing_a_session_spares_running_reads_and_rebuilds_on_reuse() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let key = CacheKey::new("session", "c1");
+        let read = test.submit("query", &plan).await.unwrap();
+        let entry = build(&mut test, "c1").await;
+        wait_until_running(&test, &read).await;
+
+        test.remove_session("session").await.unwrap();
+        assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
+        assert!(is_successful(&finish(&mut test, &read).await));
+
+        let again = test.submit("again", &plan).await.unwrap();
+        assert!(is_successful(&finish(&mut test, &again).await));
+        let rebuilt = test.cache_state().lookup(&key).await.unwrap().unwrap();
+        assert_ne!(rebuilt.materializing_job, entry.materializing_job);
+    }
+
+    /// A query reading a cache when its session is removed, which then loses
+    /// that cache, fails rather than rebuild it: nothing would remove an entry
+    /// made for the removed session. A retry on the session rebuilds as usual.
+    #[tokio::test]
+    async fn removing_a_session_fails_a_later_rebuild_for_its_running_reads() {
+        let (mut test, _metrics) = scheduler_test(None).await;
+        let plan = cache_over("c1", aggregation_logical_plan(2));
+        let read = test.submit("query", &plan).await.unwrap();
+        let entry = build(&mut test, "c1").await;
+        wait_until_running(&test, &read).await;
+
+        test.remove_session("session").await.unwrap();
+        test.lose_executor(&holder_of(&entry)).await.unwrap();
+
+        let error = failure(&finish(&mut test, &read).await);
+        assert!(
+            error.contains(CACHE_DATA_LOST) && error.contains("session was closed"),
+            "{error}"
+        );
+        let key = CacheKey::new("session", "c1");
+        assert!(test.cache_state().lookup(&key).await.unwrap().is_none());
     }
 
     /// Ticks until `cache_id`'s entry is recorded, without ticking past it: one

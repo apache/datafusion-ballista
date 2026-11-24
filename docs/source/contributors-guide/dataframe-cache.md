@@ -223,15 +223,25 @@ pin.
 **Validate-on-read** enforces "never read from a dead executor": whenever a
 cache is resolved into a read (when a query is submitted, and again before a held query runs), a location on an
 executor that is not live turns the hit into a miss, and the dead entry is
-dropped. A dropped entry's build data is deleted after the usual delay for a
-finished job's data (`finished_job_data_clean_up_interval_seconds`), which lets
-a query still reading it finish. Invalidation is **whole-entry** — a cache is rebuilt in full, never
+dropped. A dropped entry's build data is deleted once no running query reads it, after
+the usual delay for a finished job's data
+(`finished_job_data_clean_up_interval_seconds`). Invalidation is **whole-entry** — a cache is rebuilt in full, never
 served with missing partitions (see
 [Per-partition recovery](#per-partition-recovery)).
 
-`invalidate_executor` (on executor loss) and `remove_session` (on session
-teardown) exist in the registry but are not called yet; until then a dead entry
-is dropped when it is next read, or when a query loses its data.
+**Removing a session** (the scheduler's `RemoveSession` gRPC call, or a Flight
+SQL session expiring)
+drops its caches. A built cache is gone at once for new queries, and its data is
+deleted once no running query reads it, after the same delay. A build still in
+flight is cancelled, and the queries waiting on it fail with "its session was
+closed". A query still reading one of its caches keeps reading it, but if it
+then loses that data it fails with "lost DataFrame::cache() data after its
+session was closed", rather than rebuild a cache for a removed session that
+nothing would remove. Using the session again builds its caches anew.
+
+`invalidate_executor` (on executor loss) exists in the registry but is not
+called yet; until then a dead entry is dropped when it is next read, or when a
+query loses its data.
 
 ## Planning & configuration
 
@@ -280,9 +290,10 @@ is dropped when it is next read, or when a query loses its data.
 
 ## Future work
 
-- **Eviction:** entries leave today only when found dead, so a long-running
-  scheduler accumulates cache data. Planned: a TTL / size-cap sweeper and
-  idle-session expiry, using the removal-returns-entries contract.
+- **Eviction:** entries leave today only when found dead or with their
+  session, and no client library removes its session yet, so a long-running
+  scheduler accumulates cache data. Planned: idle-session expiry and a TTL /
+  size-cap sweeper, using the removal-returns-entries contract.
 - **Locality:** place read tasks on the executor holding each partition
   (`TaskDistributionPolicy::Custom`), Flight fetch as fallback (see [#2319]).
 

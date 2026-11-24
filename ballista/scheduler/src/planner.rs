@@ -54,7 +54,7 @@ use log::debug;
 use crate::physical_optimizer::join_selection::{
     collect_left_broadcast_safe, should_swap_join_order,
 };
-use crate::state::task_builder::restrict_plan_to_partitions;
+use crate::state::task_builder::branch_splits;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
@@ -731,26 +731,22 @@ impl DefaultDistributedPlanner {
 /// Whether a union branch can be left in the union's own stage.
 ///
 /// A branch already sitting behind a stage boundary needs nothing more, and
-/// neither does one that per-task restriction can reduce to zero partitions —
-/// that is the property the union's index arithmetic relies on. The second
-/// question is put to the real rewriter rather than to a list of operators, so
-/// it stays correct as the rewriter's handling of collapses, broadcast readers
-/// and leaf types evolves.
+/// neither does one that per-task restriction can cut to whatever share of it
+/// a task runs ([`branch_splits`]). That question is put to the real rewriter
+/// rather than to a list of operators, so it stays correct as the rewriter's
+/// handling of collapses, broadcast readers and leaf types evolves.
+///
+/// The rewriter is asked without the scheduler's resolver, so a branch over a
+/// leaf of several partitions that only a resolver can restrict, such as a
+/// scan over a source of your own, gets a stage of its own. So does a node
+/// over a shuffle of several partitions, which the planner sees before it is
+/// resolved. A branch over a one-partition leaf stays inline: only the task
+/// that owns its partition runs it, whole.
 fn can_stay_inline(plan: &Arc<dyn ExecutionPlan>) -> bool {
     if plan.is::<UnresolvedShuffleExec>() {
         return true;
     }
-    !holds_a_broadcast(plan) && restricts_to_nothing(plan)
-}
-
-/// Whether per-task restriction can reduce `plan` to zero partitions. An empty
-/// slice means "this task polls nothing here", so a branch that still reports a
-/// partition afterwards, or that the rewriter refuses, cannot be restricted
-/// away. No resolver is passed, so a node Ballista does not know gets a stage
-/// of its own.
-fn restricts_to_nothing(plan: &Arc<dyn ExecutionPlan>) -> bool {
-    restrict_plan_to_partitions(plan.clone(), &[], None)
-        .is_ok_and(|p| p.properties().output_partitioning().partition_count() == 0)
+    !holds_a_broadcast(plan) && branch_splits(plan, None)
 }
 
 /// Whether `plan` contains a broadcast input or a `CollectLeft` join.
@@ -965,6 +961,7 @@ mod range_shuffle_tests;
 mod test {
     use super::{can_stay_inline, holds_a_broadcast};
     use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
+    use crate::test_utils::payload::PayloadExec;
     use crate::test_utils::{datafusion_test_context, scan_with_file_groups};
     use ballista_core::assert_plan;
     use ballista_core::error::BallistaError;
@@ -987,6 +984,7 @@ mod test {
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+    use datafusion::physical_plan::union::UnionExec;
     use datafusion::physical_plan::windows::BoundedWindowAggExec;
     use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion::physical_plan::{InputOrderMode, Partitioning};
@@ -1001,6 +999,95 @@ mod test {
     #[test]
     fn plain_union_branch_stays_inline() {
         assert!(can_stay_inline(&scan_with_file_groups(4)));
+    }
+
+    /// A branch over an unknown leaf of several partitions gets a stage of its
+    /// own even when the leaf sits below another node, since restricting the
+    /// node restricts the leaf too.
+    #[test]
+    fn multi_partition_unknown_leaf_below_a_node_needs_its_own_stage() {
+        let branch = project_leading_columns(PayloadExec::leaf(&["p0", "p1"]), 1);
+        assert!(!can_stay_inline(&branch));
+    }
+
+    /// A node over a shuffle, such as the final aggregate of a union of
+    /// aggregates, gets a stage of its own: the planner sees the shuffle before
+    /// it is resolved, when nothing can restrict it to part of its partitions.
+    /// Over a one-partition shuffle it stays inline, since the task that owns
+    /// the partition reads the shuffle whole.
+    #[test]
+    fn node_over_an_unresolved_shuffle_stays_inline_only_over_one_partition() {
+        let over_shuffle = |partitions| {
+            let reader: Arc<dyn ExecutionPlan> = Arc::new(UnresolvedShuffleExec::new(
+                1,
+                scan_with_file_groups(1).schema(),
+                Partitioning::UnknownPartitioning(partitions),
+            ));
+            project_leading_columns(reader, 1)
+        };
+        assert_eq!(
+            [4, 1].map(|partitions| can_stay_inline(&over_shuffle(partitions))),
+            [false, true]
+        );
+    }
+
+    /// Plans `plan` into query stages with the default options.
+    fn stages_of(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Vec<Arc<dyn ShuffleWriter>>, BallistaError> {
+        DefaultDistributedPlanner::new().plan_query_stages(
+            &"job".into(),
+            plan,
+            &datafusion::config::ConfigOptions::default(),
+        )
+    }
+
+    /// A union branch over an unknown leaf of several partitions gets a stage
+    /// of its own rather than leave a task of the union's stage owning part of
+    /// it. The union's stage reads it through a shuffle, which a task can cut
+    /// to any share.
+    #[test]
+    fn union_over_a_multi_partition_unknown_leaf_gives_it_a_stage_of_its_own()
+    -> Result<(), BallistaError> {
+        let union = UnionExec::try_new(vec![
+            scan_with_file_groups(3),
+            PayloadExec::leaf(&["p0", "p1"]),
+        ])?;
+        let stages = stages_of(union)?;
+
+        assert_eq!(stages.len(), 2);
+        assert_plan!(stages[0].as_ref(), @r#"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+          PayloadExec: payloads=["p0", "p1"]
+        "#);
+        assert_plan!(stages[1].as_ref(), @"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(5)
+          UnionExec
+            DataSourceExec: file_groups={3 groups: [[file0.parquet], [file1.parquet], [file2.parquet]]}, projection=[a], file_type=parquet
+            UnresolvedShuffleExec: stage=1, partitioning: UnknownPartitioning(2)
+        ");
+        Ok(())
+    }
+
+    /// A union branch over a one-partition unknown leaf stays in the union's
+    /// stage: only the task that owns its partition runs it.
+    #[test]
+    fn union_over_a_one_partition_unknown_leaf_keeps_it_in_the_unions_stage()
+    -> Result<(), BallistaError> {
+        let union = UnionExec::try_new(vec![
+            scan_with_file_groups(3),
+            PayloadExec::leaf(&["p0"]),
+        ])?;
+        let stages = stages_of(union)?;
+
+        assert_eq!(stages.len(), 1);
+        assert_plan!(stages[0].as_ref(), @r#"
+        ShuffleWriterExec: partitioning: UnknownPartitioning(4)
+          UnionExec
+            DataSourceExec: file_groups={3 groups: [[file0.parquet], [file1.parquet], [file2.parquet]]}, projection=[a], file_type=parquet
+            PayloadExec: payloads=["p0"]
+        "#);
+        Ok(())
     }
 
     /// A branch already sitting behind a stage boundary needs nothing more.

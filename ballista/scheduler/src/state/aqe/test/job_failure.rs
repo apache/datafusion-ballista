@@ -27,11 +27,13 @@ use crate::test_utils::{
     mock_failed_task, revive_graph_and_complete_next_stage_with_executor,
 };
 use ballista_core::error::Result;
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::{
     FailedTask, JobStatus, ShuffleWritePartition, SuccessfulTask, failed_task,
     job_status, task_status,
 };
 use datafusion::execution::context::{SessionConfig, SessionContext};
+use std::sync::Arc;
 
 /// Builds an adaptive graph for a join (two concurrent leaf stages).
 async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
@@ -52,6 +54,7 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         &logical_plan,
         0,
         None,
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
     )
     .await
     .unwrap()
@@ -72,6 +75,7 @@ async fn test_aggregation_plan() -> AdaptiveExecutionGraph {
         &plan,
         0,
         None,
+        Arc::new(BallistaPhysicalExtensionCodec::default()),
     )
     .await
     .unwrap()

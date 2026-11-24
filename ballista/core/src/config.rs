@@ -182,6 +182,10 @@ pub const BALLISTA_SEMI_JOIN_REDUCTION: &str = "ballista.optimizer.semi_join_red
 pub const BALLISTA_BALANCE_SCAN_FILE_GROUPS: &str =
     "ballista.optimizer.balance_scan_file_groups";
 
+/// Enable cross-stage hash-join runtime filters (AQE only).
+pub const BALLISTA_RUNTIME_FILTER_ENABLED: &str =
+    "ballista.planner.runtime_filter.enabled";
+
 /// Configuration key to enable AQE coalesce-shuffle-partitions rule.
 /// Disabled by default — opt in when the workload benefits from larger
 /// downstream tasks more than from preserved parallelism.
@@ -509,6 +513,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Wait time in milliseconds between IO retries in the Ballista client.".to_string(),
                          DataType::UInt64,
                          Some(3000.to_string())),
+        ConfigEntry::new(BALLISTA_RUNTIME_FILTER_ENABLED.to_string(),
+                         "Enables bounded distributed runtime filters for AQE inner and semi hash joins.".to_string(),
+                         DataType::Boolean, Some(false.to_string())),
         ConfigEntry::new(BALLISTA_COALESCE_ENABLED.to_string(),
                          "Enables the AQE coalesce-shuffle-partitions rule. \
                           Disabled by default — opt in when fewer/larger \
@@ -612,8 +619,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
              column with HyperLogLog while writing shuffle output, so the adaptive \
              planner can estimate join cardinalities downstream of the shuffle. \
              Costs hashing every key value on the write path and one sketch per \
-             key column in each task's status update (4 KiB with the default \
-             precision).".to_string(),
+             key column in each task's status update (at most about 2 KiB with \
+             the default precision).".to_string(),
             DataType::Boolean,
             Some(true.to_string()),
         ),
@@ -622,9 +629,9 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
             "Precision of the HyperLogLog sketches that \
              `ballista.shuffle.collect_distinct_counts` collects, from 4 to 16 \
              (values outside that range are clamped). A sketch has \
-             2^precision one-byte registers and a standard error of about \
-             1.04 / 2^(precision / 2): 10 is 1 KiB and 3.3%, 12 is 4 KiB and \
-             1.6%, 14 is 16 KiB and 0.8%. The scheduler keeps one sketch per \
+             2^precision registers, sent at 4 bits each, and a standard error of \
+             about 1.04 / 2^(precision / 2): 10 is 512 B and 3.3%, 12 is 2 KiB \
+             and 1.6%, 14 is 8 KiB and 0.8%. The scheduler keeps one sketch per \
              key column for every task of a stage, so lower it for stages with \
              many thousands of tasks.".to_string(),
             DataType::UInt16,
@@ -1123,6 +1130,11 @@ impl BallistaConfig {
     /// surviving files are spread evenly over the scan's file groups.
     pub fn balance_scan_file_groups_enabled(&self) -> bool {
         self.get_bool_setting(BALLISTA_BALANCE_SCAN_FILE_GROUPS)
+    }
+
+    /// Whether distributed runtime filtering is enabled.
+    pub fn runtime_filter_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_RUNTIME_FILTER_ENABLED)
     }
 
     /// Returns whether the AQE coalesce-shuffle-partitions rule is enabled.
