@@ -17,7 +17,7 @@
 
 use crate::config::BallistaConfig;
 use crate::execution_plans::{DistributedExplainAnalyzeExec, DistributedQueryExec};
-use crate::logical_plan_hook::before_submit;
+use crate::logical_plan_hook::run_logical_plan_hooks;
 use crate::serde::BallistaLogicalExtensionCodec;
 
 use datafusion::arrow::datatypes::Schema;
@@ -138,9 +138,11 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                     log::debug!(
                         "create_physical_plan - handling explain analyze statement"
                     );
-                    let inner_plan =
-                        before_submit(analyze.input.as_ref().clone(), session_state)
-                            .await?;
+                    let inner_plan = run_logical_plan_hooks(
+                        analyze.input.as_ref().clone(),
+                        session_state,
+                    )
+                    .await?;
                     let distributed_query_exec =
                         Arc::new(DistributedQueryExec::<T>::with_extension(
                             self.scheduler_url.clone(),
@@ -160,7 +162,9 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                 _ => {
                     log::debug!("create_physical_plan - handling general statement");
 
-                    let plan = before_submit(logical_plan.clone(), session_state).await?;
+                    let plan =
+                        run_logical_plan_hooks(logical_plan.clone(), session_state)
+                            .await?;
                     Ok(Arc::new(DistributedQueryExec::<T>::with_extension(
                         self.scheduler_url.clone(),
                         self.config.clone(),

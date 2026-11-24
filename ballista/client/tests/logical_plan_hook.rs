@@ -133,6 +133,16 @@ mod standalone {
             .unwrap_err();
         assert_eq!(error.to_string(), "Execution error: t has no version 0");
 
+        // EXPLAIN ANALYZE runs the hooks on the query it sends, as its second
+        // run.
+        let error = ctx
+            .sql("EXPLAIN ANALYZE SELECT id FROM t")
+            .await?
+            .collect()
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Execution error: t has no version 1");
+
         // A query of `information_schema` alone runs on the client, without
         // hooks.
         let sql = "SELECT table_name FROM information_schema.tables \

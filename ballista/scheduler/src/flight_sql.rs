@@ -25,7 +25,7 @@ use std::sync::Arc;
 use ballista_core::JobId;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::logical_plan_hook::before_submit;
+use ballista_core::logical_plan_hook::run_logical_plan_hooks;
 use ballista_core::serde::protobuf::{JobStatus, RunningJob, SuccessfulJob, job_status};
 use ballista_flight_sql::backend::{PipelinedOutput, QueryBackend, QueryResult};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -63,7 +63,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryBackend
         plan: LogicalPlan,
     ) -> Result<QueryResult> {
         // The plan was planned here, so its hooks run here, on every run.
-        let plan = before_submit(plan, &ctx.state()).await?;
+        let plan = run_logical_plan_hooks(plan, &ctx.state()).await?;
 
         // Subscribe before submitting so no status can be missed, and follow
         // the status stream rather than polling `get_job_status`.

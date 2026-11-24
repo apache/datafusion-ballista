@@ -27,25 +27,49 @@ use datafusion::logical_expr::LogicalPlan;
 use crate::extension::SessionConfigExt;
 
 /// Rewrites a query's logical plan each time it's submitted for distributed
-/// execution, on the node that planned it: the client for a Rust client, and
-/// the scheduler for a Flight SQL client.
+/// execution.
 ///
-/// It runs exactly once per run, before the plan is encoded or physically
-/// planned, so every part of the plan sees the same rewrite. A client's plan is
-/// already optimized; a Flight SQL plan is optimized on the scheduler
-/// afterwards. A reused `DataFrame` or Flight SQL prepared statement runs it
-/// again each time. That makes it the place to decide what should be decided
-/// when a query runs rather than when it's planned, such as the version of a
-/// table to read. DataFusion decides that in `TableProvider::scan`, but a
-/// Ballista job is physically planned on the scheduler, possibly more than
-/// once.
+/// A reused `DataFrame` or Flight SQL prepared statement runs it again on every
+/// run, so it is the place to decide what should be decided when a query runs
+/// rather than when it's planned, such as the version of a table to read.
+/// DataFusion decides that in `TableProvider::scan`, but a Ballista job is
+/// physically planned on the scheduler, possibly more than once.
 ///
-/// Plans that run on the client, such as `SHOW` or a query of
-/// `information_schema` alone, are planned there without running hooks.
+/// Register hooks with [`SessionConfigExt::with_ballista_logical_plan_hook`].
+/// They run in the order they were added.
 ///
-/// Register hooks with
-/// [`SessionConfigExt::with_ballista_logical_plan_hook`]. They run in the order
-/// they were added.
+/// # When it runs
+///
+/// Once per run, on the node that planned the query, before the plan is
+/// encoded or physically planned:
+///
+/// - On a client, in [`BallistaQueryPlanner`], after DataFusion has optimized
+///   the plan.
+/// - On the scheduler, for a Flight SQL client, before the scheduler optimizes
+///   the plan.
+///
+/// Hooks don't run for:
+///
+/// - A plan the client runs itself, such as `SHOW` or a query of
+///   `information_schema` alone, or a statement Flight SQL runs on the
+///   scheduler itself, such as DDL, `SHOW` or a catalog query.
+/// - A session whose query planner is replaced with
+///   [`SessionConfigExt::with_ballista_query_planner`], unless that planner
+///   delegates to [`BallistaQueryPlanner`].
+/// - A physical plan submitted with [`execute_physical_plan`].
+///
+/// # Contract
+///
+/// The returned plan must have the same schema as `plan`. A client's plan is
+/// already optimized, so a `TableScan` may hold pushed-down filters, a
+/// projection and a fetch, and a filter its source accepted as
+/// [`TableProviderFilterPushDown::Exact`] is applied nowhere else. A hook that
+/// replaces a scan's source must replace it with one that applies them the
+/// same way, or the query returns wrong rows.
+///
+/// [`BallistaQueryPlanner`]: crate::planner::BallistaQueryPlanner
+/// [`execute_physical_plan`]: crate::execution_plans::execute_physical_plan
+/// [`TableProviderFilterPushDown::Exact`]: datafusion::logical_expr::TableProviderFilterPushDown::Exact
 #[async_trait]
 pub trait LogicalPlanHook: Debug + Send + Sync {
     /// Returns `plan` rewritten for this run. An error fails the query with it.
@@ -56,9 +80,9 @@ pub trait LogicalPlanHook: Debug + Send + Sync {
     ) -> Result<LogicalPlan>;
 }
 
-/// Runs the hooks registered in `session`'s config on `plan`, in the order they
-/// were added.
-pub async fn before_submit(
+/// Runs the [`LogicalPlanHook`]s registered in `session`'s config on `plan`, in
+/// the order they were added.
+pub async fn run_logical_plan_hooks(
     mut plan: LogicalPlan,
     session: &dyn Session,
 ) -> Result<LogicalPlan> {
@@ -105,7 +129,7 @@ mod tests {
         });
         let state = SessionStateBuilder::new().with_config(config).build();
         let plan = LogicalPlanBuilder::empty(true).build()?;
-        let plan = before_submit(plan, &state).await?;
+        let plan = run_logical_plan_hooks(plan, &state).await?;
         Ok(plan.display_indent().to_string())
     }
 
