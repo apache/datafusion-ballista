@@ -113,16 +113,20 @@ impl ComposedLogicalExtensionCodec {
     }
 }
 
-/// Combines the codecs' errors, so the owning codec's error isn't hidden.
-///
-/// TODO: when moving this to `datafusion-proto`, return the error of a codec
-/// that recognised the node (one other than `NotImplemented`) unchanged, and
-/// join the errors only when every codec declined. Joining them into one string
-/// loses the owning codec's error chain, so `DataFusionError::find_root` can't
-/// reach it and callers can only match its text. For example, encoding an
-/// Iceberg table that can't be loaded reports `no composed codec could encode
-/// it: codec 0: … not implemented …; codec 1: <the load error>`.
+/// The error to report when no codec could encode a node. If exactly one codec
+/// recognised it, failing with something other than `NotImplemented`, that is
+/// its owner, and its error is returned unchanged, so callers can reach its
+/// cause through the error chain. Otherwise every codec's error is joined, so
+/// none is hidden.
 fn collect(mut errors: Vec<DataFusionError>) -> DataFusionError {
+    let mut owners = errors
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| !matches!(e, DataFusionError::NotImplemented(_)))
+        .map(|(position, _)| position);
+    if let (Some(owner), None) = (owners.next(), owners.next()) {
+        return errors.swap_remove(owner);
+    }
     match errors.len() {
         0 => DataFusionError::NotImplemented("Empty list of composed codecs".to_owned()),
         1 => errors.remove(0),
@@ -245,7 +249,7 @@ mod tests {
     use super::*;
     use crate::serde::BallistaLogicalExtensionCodec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::common::not_impl_err;
+    use datafusion::common::{exec_err, not_impl_err};
     use datafusion::datasource::empty::EmptyTable;
     use datafusion::prelude::SessionContext;
     use datafusion_proto::bytes::{
@@ -254,9 +258,11 @@ mod tests {
     };
 
     /// A codec that owns the table and the function named after it, and
-    /// encodes either as its own name. It decodes any bytes at all into an
-    /// empty table with one column of that name, as a codec that just calls
-    /// `MyMessage::decode(buf)` might with another codec's bytes.
+    /// encodes either as its own name. It also owns the table `gone_<name>`,
+    /// and fails to encode it, as for a table that can't be loaded. It decodes
+    /// any bytes at all into an empty table with one column of that name, as a
+    /// codec that just calls `MyMessage::decode(buf)` might with another
+    /// codec's bytes.
     #[derive(Debug)]
     struct Owner(&'static str);
 
@@ -293,6 +299,9 @@ mod tests {
             _node: Arc<dyn TableProvider>,
             buf: &mut Vec<u8>,
         ) -> Result<()> {
+            if table_ref.table() == format!("gone_{}", self.0) {
+                return exec_err!("{} can't load {table_ref}", self.0);
+            }
             if table_ref.table() != self.0 {
                 return not_impl_err!("{} doesn't handle {table_ref}", self.0);
             }
@@ -376,6 +385,29 @@ mod tests {
             "Execution error: no composed codec could encode it: codec 0: This \
              feature is not implemented: iceberg doesn't handle delta; codec 1: This \
              feature is not implemented: hudi doesn't handle delta"
+        );
+    }
+
+    #[test]
+    fn should_report_the_owning_codecs_error_unchanged() {
+        let error = encode(&composed(&["ballista", "iceberg", "hudi"]), "gone_iceberg")
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Execution error: iceberg can't load gone_iceberg"
+        );
+    }
+
+    #[test]
+    fn should_report_every_error_when_several_codecs_claim_a_node() {
+        assert_eq!(
+            encode(&composed(&["iceberg", "hudi", "iceberg"]), "gone_iceberg")
+                .unwrap_err()
+                .to_string(),
+            "Execution error: no composed codec could encode it: codec 0: Execution \
+             error: iceberg can't load gone_iceberg; codec 1: This feature is not \
+             implemented: hudi doesn't handle gone_iceberg; codec 2: Execution error: \
+             iceberg can't load gone_iceberg"
         );
     }
 

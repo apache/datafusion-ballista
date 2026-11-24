@@ -205,10 +205,10 @@ fn origin(scan: &TableScan) -> Option<&IcebergCatalogTableProvider> {
 ///
 /// DDL and `DESCRIBE` aren't analyzed, so they still work while a table is gone.
 ///
-/// TODO: remove once tables are pinned when a query runs (#2881), which needs
-/// the integration on a ballista-core with that hook, so on DataFusion 56. A
-/// table that can't be loaded then fails the query where it's loaded, and no
-/// [`PinnedTable`] holds an error for this rule to find.
+/// TODO: remove once the integration's ballista-core keeps the cause of a
+/// plan-encoding error (#2911) and `ComposedLogicalExtensionCodec` returns the
+/// owning codec's error unchanged, both on DataFusion 56. Encoding the plan then
+/// fails with the load error as its cause.
 #[derive(Debug)]
 pub(crate) struct RequireLoadedTables;
 
