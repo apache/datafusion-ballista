@@ -22,6 +22,7 @@
 #![cfg(feature = "flight-sql")]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arrow_flight::sql::client::FlightSqlServiceClient;
@@ -29,6 +30,7 @@ use arrow_flight::sql::{CommandGetTables, SqlInfo};
 use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigExt;
+use ballista_core::logical_plan_hook::LogicalPlanHook;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::utils::{
@@ -42,8 +44,13 @@ use ballista_scheduler::scheduler_process::start_grpc_service_with_listener;
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::catalog::{Session, TableProvider};
+use datafusion::common::exec_err;
+use datafusion::common::tree_node::Transformed;
+use datafusion::datasource::provider_as_source;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::prelude::SessionConfig;
+use datafusion::logical_expr::LogicalPlan;
+use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::TryStreamExt;
 use tonic::transport::Channel;
@@ -56,6 +63,12 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Boots a scheduler serving Flight SQL plus one executor, and returns the
 /// scheduler's URL.
 async fn start_cluster() -> Result<String> {
+    start_cluster_with_config(default_config_producer()).await
+}
+
+/// Boots a scheduler serving Flight SQL, whose sessions start from
+/// `session_config`, plus one executor, and returns the scheduler's URL.
+async fn start_cluster_with_config(session_config: SessionConfig) -> Result<String> {
     let config = SchedulerConfig::default()
         .with_scheduler_policy(TaskSchedulingPolicy::PullStaged)
         .with_flight_sql(true);
@@ -63,7 +76,7 @@ async fn start_cluster() -> Result<String> {
     let cluster = BallistaCluster::new_memory(
         "localhost:50050",
         Arc::new(default_session_builder),
-        Arc::new(default_config_producer),
+        Arc::new(move || session_config.clone()),
     );
 
     let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -329,6 +342,86 @@ async fn flight_sql_supports_prepared_statements() -> Result {
     let batches = collect(&mut client, info).await?;
     assert_eq!(row_count(&batches), 3);
 
+    prepared.close().await?;
+
+    Ok(())
+}
+
+/// Swaps each scan of `people` for the next of `versions` on every run, as a
+/// table format's hook would swap in the version its catalog serves when the
+/// query runs.
+#[derive(Debug)]
+struct NextVersion {
+    versions: Vec<Arc<dyn TableProvider>>,
+    runs: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LogicalPlanHook for NextVersion {
+    async fn before_submit(
+        &self,
+        plan: LogicalPlan,
+        _session: &dyn Session,
+    ) -> datafusion::error::Result<LogicalPlan> {
+        let run = self.runs.fetch_add(1, Ordering::SeqCst);
+        let Some(version) = self.versions.get(run) else {
+            return exec_err!("people has no version {run}");
+        };
+        plan.transform_up_with_subqueries(|node| match node {
+            LogicalPlan::TableScan(mut scan) if scan.table_name.table() == "people" => {
+                scan.source = provider_as_source(Arc::clone(version));
+                Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
+            }
+            node => Ok(Transformed::no(node)),
+        })
+        .map(|transformed| transformed.data)
+    }
+}
+
+/// A prepared statement is planned once, but a logical plan hook runs on the
+/// scheduler each time it's executed.
+#[tokio::test]
+async fn flight_sql_runs_logical_plan_hooks_on_each_execution() -> Result {
+    let versions = tempfile::tempdir()?;
+    let local = SessionContext::new();
+    let mut providers = Vec::new();
+    for (name, rows) in [("v1", "1,dave\n"), ("v2", "1,dave\n2,erin\n")] {
+        let path = versions.path().join(format!("{name}.csv"));
+        std::fs::write(&path, format!("id,name\n{rows}"))?;
+        local
+            .register_csv(name, path.to_str().unwrap(), CsvReadOptions::new())
+            .await?;
+        providers.push(local.table_provider(name).await?);
+    }
+    let hook = NextVersion {
+        versions: providers,
+        runs: AtomicUsize::new(0),
+    };
+    let config =
+        default_config_producer().with_ballista_logical_plan_hook(Arc::new(hook));
+    let url = start_cluster_with_config(config).await?;
+    let (mut client, _csv) = client_with_people(&url).await?;
+
+    let mut prepared = client
+        .prepare("SELECT id, name FROM people ORDER BY id".to_string(), None)
+        .await?;
+    for expected in [
+        "+----+------+\n\
+         | id | name |\n\
+         +----+------+\n\
+         | 1  | dave |\n\
+         +----+------+",
+        "+----+------+\n\
+         | id | name |\n\
+         +----+------+\n\
+         | 1  | dave |\n\
+         | 2  | erin |\n\
+         +----+------+",
+    ] {
+        let info = prepared.execute().await?;
+        let batches = collect(&mut client, info).await?;
+        assert_eq!(pretty_format_batches(&batches)?.to_string(), expected);
+    }
     prepared.close().await?;
 
     Ok(())
