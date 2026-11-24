@@ -1000,6 +1000,7 @@ dependencies = [
  "datafusion-proto",
  "env_logger",
  "futures",
+ "insta",
  "log",
  "rstest",
  "tempfile",
