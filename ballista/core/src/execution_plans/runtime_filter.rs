@@ -114,25 +114,46 @@ fn bloom_bits(hash: u64) -> impl Iterator<Item = usize> {
 }
 
 impl RuntimeFilter {
+    /// Whether the summary accepts every non-NULL key. Union cannot make a
+    /// saturated Bloom selective again; its range bounds may still be useful.
+    pub fn is_saturated(&self) -> bool {
+        self.in_hashes.is_none() && self.bloom.iter().all(|&byte| byte == u8::MAX)
+    }
+
+    /// Whether Bloom occupancy is high enough to skip probe-side checks.
+    pub fn is_nearly_saturated(&self) -> bool {
+        // With four probes, 99% occupancy implies about 96% false positives.
+        self.in_hashes.is_none()
+            && self
+                .bloom
+                .iter()
+                .map(|byte| byte.count_ones() as usize)
+                .sum::<usize>()
+                * 100
+                >= BLOOM_BYTES * 8 * 99
+    }
+
     fn update(&mut self, keys: &ArrayRef) -> Result<()> {
         self.has_null |= keys.null_count() > 0;
-        with_hashes([keys], &HASH_STATE, |hashes| {
-            for (row, &hash) in hashes.iter().enumerate() {
-                if keys.is_null(row) {
-                    continue;
-                }
-                for bit in bloom_bits(hash) {
-                    self.bloom[bit / 8] |= 1 << (bit % 8);
-                }
-                if let Some(values) = &mut self.in_hashes {
-                    values.insert(hash);
-                    if values.len() > MAX_VALUES {
-                        self.in_hashes = None;
+        if !self.is_saturated() {
+            with_hashes([keys], &HASH_STATE, |hashes| {
+                for (row, &hash) in hashes.iter().enumerate() {
+                    if keys.is_null(row) {
+                        continue;
+                    }
+                    for bit in bloom_bits(hash) {
+                        self.bloom[bit / 8] |= 1 << (bit % 8);
+                    }
+                    if let Some(values) = &mut self.in_hashes {
+                        values.insert(hash);
+                        if values.len() > MAX_VALUES {
+                            self.in_hashes = None;
+                        }
                     }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
+        }
         if !self.bounds_disabled && keys.null_count() != keys.len() {
             let mut min = MinAccumulator::try_new(keys.data_type())?;
             let mut max = MaxAccumulator::try_new(keys.data_type())?;
@@ -406,6 +427,16 @@ impl RuntimeFilterApplyExec {
             metrics: ExecutionPlanMetricsSet::new(),
         })
     }
+
+    /// Bind a complete report while preserving the input and join key.
+    pub fn with_payload(&self, payload: RuntimeFilterPayload) -> Result<Self> {
+        Self::try_new(
+            self.input.clone(),
+            self.filter_id,
+            self.key.clone(),
+            Some(payload),
+        )
+    }
 }
 
 impl DisplayAs for RuntimeFilterApplyExec {
@@ -673,5 +704,30 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn runtime_filter_saturation_preserves_later_bounds_and_nulls() {
+        let mut filter = RuntimeFilter::default();
+        filter
+            .update(&(Arc::new(Int64Array::from_iter_values(0..1_000_000)) as ArrayRef))
+            .unwrap();
+        assert!(filter.is_saturated());
+        filter
+            .update(
+                &(Arc::new(Int64Array::from(vec![Some(-1), Some(2_000_000), None]))
+                    as ArrayRef),
+            )
+            .unwrap();
+        let payload = filter.to_proto(1).unwrap();
+        assert!(payload.has_null);
+        assert_eq!(
+            ScalarValue::try_from(payload.min.as_ref().unwrap()).unwrap(),
+            ScalarValue::Int64(Some(-1))
+        );
+        assert_eq!(
+            ScalarValue::try_from(payload.max.as_ref().unwrap()).unwrap(),
+            ScalarValue::Int64(Some(2_000_000))
+        );
     }
 }

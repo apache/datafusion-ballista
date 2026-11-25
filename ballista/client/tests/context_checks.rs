@@ -22,8 +22,8 @@ mod supported {
     use crate::common::{
         ALLTYPES_GROUP_BY, ALLTYPES_GROUP_BY_SQL, ALLTYPES_ID_GT_4, ALLTYPES_ID_GT_4_SQL,
         ALLTYPES_JOIN, ALLTYPES_JOIN_SQL, register_alltypes, remote_context,
-        remote_context_with_state, set_option, standalone_context,
-        standalone_context_with_state, test_data,
+        remote_context_with_state, remote_push_context, set_option, standalone_context,
+        standalone_context_with_state, standalone_push_context, test_data,
     };
     use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::DistributedQueryExec;
@@ -42,6 +42,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_collect(
         #[future(awt)]
@@ -61,6 +63,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_collect_client_statistics_for_show(
         #[future(awt)]
@@ -125,6 +129,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_collect_client_statistics_for_insert(
         #[future(awt)]
@@ -189,6 +195,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_show_configs(
         #[future(awt)]
@@ -220,6 +228,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_show_configs_ballista(
         #[future(awt)]
@@ -256,6 +266,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_set_configs(
         #[future(awt)]
@@ -288,6 +300,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_show_tables(
         #[future(awt)]
@@ -322,6 +336,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_create_external_table(
         #[future(awt)]
@@ -354,6 +370,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_collect_from_dataframe(
         #[future(awt)]
@@ -389,6 +407,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_write(
         #[future(awt)]
@@ -435,6 +455,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_disable_view_types(
         #[future(awt)]
@@ -467,6 +489,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_set_collect_left_thresholds(
         #[future(awt)]
@@ -496,6 +520,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_sql_show_with_url_table(
         #[future(awt)]
@@ -521,6 +547,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_support_sql_insert_into(
         #[future(awt)]
@@ -573,6 +601,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[case::standalone_state(standalone_context_with_state())]
     #[case::remote_state(remote_context_with_state())]
     #[tokio::test]
@@ -664,6 +694,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[case::standalone_state(standalone_context_with_state())]
     #[case::remote_state(remote_context_with_state())]
     #[tokio::test]
@@ -689,6 +721,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[case::standalone_state(standalone_context_with_state())]
     #[case::remote_state(remote_context_with_state())]
     #[tokio::test]
@@ -709,6 +743,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_force_local_read(
         #[future(awt)]
@@ -745,6 +781,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_force_local_read_with_flight(
         #[future(awt)]
@@ -786,6 +824,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_support_sort_merge_join(
         #[future(awt)]
@@ -820,6 +860,9 @@ mod supported {
 
     // Users can opt back into hash join via the standard DataFusion knob,
     // even though Ballista defaults `prefer_hash_join` to false. See #1648.
+    // There are no push-staged cases: those clusters are built from a session
+    // state, and a scheduler built from a state plans with that state, so it
+    // does not see the client's `SET`.
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -860,6 +903,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_explain_query_correctly(
         #[future(awt)]
@@ -917,6 +962,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_execute_explain_analyze_query(
         #[future(awt)]
@@ -1001,6 +1048,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_explain_executed_plan(
         #[future(awt)]
@@ -1048,6 +1097,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_force_client_pull(
         #[future(awt)]
@@ -1084,6 +1135,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
 
     async fn should_execute_sql_collect_from_arrow_file(
@@ -1108,6 +1161,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
     #[tokio::test]
     async fn should_set_io_retry_config(
         #[future(awt)]
@@ -1131,6 +1186,54 @@ mod supported {
             "| ballista.client.io_retries_times      | 5     |",
             "| ballista.client.io_retry_wait_time_ms | 1500  |",
             "+---------------------------------------+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
+    #[tokio::test]
+    async fn should_execute_asof_join(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let result = ctx
+            .sql(
+                "WITH asof_left (id, grp, ts) AS ( 
+                     SELECT * FROM (VALUES (1, 'A', 1), (2, 'A', 4), (3, 'A', 7), (4, 'B', 2), (5, 'B', 8), (6, 'C', 3))
+                 ), 
+                 asof_right (grp, ts, val) AS ( 
+                     SELECT * FROM (VALUES ('A', 2, 'a2'), ('A', 4, 'a4'), ('B', 6, 'b6'), ('A', 6, 'a6'), ('B', 1, 'b1'))
+                 )
+                 SELECT l.id, l.ts, r.ts AS r_ts, r.val
+                 FROM asof_left l 
+                 ASOF JOIN asof_right r
+                 MATCH_CONDITION (l.ts >= r.ts)
+                 ON l.grp = r.grp
+                 ORDER BY l.id",
+            )
+            .await?;
+        let plan = result.create_physical_plan().await?;
+        let result = collect(plan.clone(), ctx.task_ctx()).await?;
+
+        let expected = [
+            "+----+----+------+-----+",
+            "| id | ts | r_ts | val |",
+            "+----+----+------+-----+",
+            "| 1  | 1  |      |     |",
+            "| 2  | 4  | 4    | a4  |",
+            "| 3  | 7  | 6    | a6  |",
+            "| 4  | 2  | 1    | b1  |",
+            "| 5  | 8  | 6    | b6  |",
+            "| 6  | 3  |      |     |",
+            "+----+----+------+-----+",
         ];
 
         assert_batches_eq!(expected, &result);

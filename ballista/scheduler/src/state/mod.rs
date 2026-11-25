@@ -38,8 +38,9 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use prost::Message;
 use std::any::type_name;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 pub(crate) mod aqe;
@@ -141,6 +142,10 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub(crate) job_id_generator: Arc<dyn JobIdGenerator>,
     /// Scheduler configuration.
     pub config: Arc<SchedulerConfig>,
+    /// Submissions admitted and not yet registered as running jobs, see
+    /// [`Admission`](crate::scheduler_server::event::Admission). Held here so
+    /// a cache rebuild can be admitted too.
+    pub(crate) admissions: Arc<AtomicUsize>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -167,6 +172,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             cache_state: cluster.cache_state(),
             cache_linker: Default::default(),
+            admissions: Default::default(),
             job_id_generator: config
                 .job_id_generator
                 .clone()
@@ -215,6 +221,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             cache_state: cluster.cache_state(),
             cache_linker: Default::default(),
+            admissions: Default::default(),
             job_id_generator: config
                 .job_id_generator
                 .clone()
@@ -265,13 +272,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         }
                         if_revive = true;
                     }
-                    for job in failed_jobs {
+                    for (job, fail_message) in failed_jobs {
                         if let Err(e) = sender
                             .post_event(QueryStageSchedulerEvent::JobRunningFailed {
                                 job_id: job,
-                                fail_message:
-                                    "task could not be prepared or was rejected by executor"
-                                        .to_string(),
+                                fail_message,
                                 queued_at: timestamp_millis(),
                                 failed_at: timestamp_millis(),
                             })
@@ -460,13 +465,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ///
     /// If it fails to launch a task set, the related [`ExecutorSlot`] will be returned.
     ///
-    /// Returns the freed executor slots and the set of job IDs the executors
-    /// rejected (failed individually while the rest of the batch ran).
+    /// Returns the freed executor slots and the jobs that cannot run, each with
+    /// the reason to fail it with (failed individually while the rest of the
+    /// batch ran). A job with several tasks that cannot be prepared fails with
+    /// one of their errors.
     async fn launch_tasks(
         &self,
         bound_tasks: Vec<BoundTask>,
         sender: &EventSender<QueryStageSchedulerEvent>,
-    ) -> Result<(Vec<ExecutorSlot>, HashSet<JobId>)> {
+    ) -> Result<(Vec<ExecutorSlot>, HashMap<JobId, String>)> {
         // Put tasks to the same executor together
         // And put tasks belonging to the same stage together for creating MultiTaskDefinition
         let mut executor_stage_assignments: HashMap<
@@ -510,13 +517,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             .launch_multi_task(&executor, tasks, &state.executor_manager)
                             .await
                         {
-                            Ok(rejected) => {
-                                reservations
-                                    .retain(|task| rejected.contains(&task.key.job_id));
+                            Ok((unprepared, rejected)) => {
+                                reservations.retain(|task| {
+                                    unprepared.contains_key(&task.key.job_id)
+                                        || rejected.contains(&task.key.job_id)
+                                });
                                 let freed = state
                                     .task_manager
                                     .take_task_reservations(&executor_id, &reservations);
-                                (vec![(executor_id.clone(), freed)], rejected)
+                                let rejected = rejected
+                                    .into_iter()
+                                    .map(|job_id| {
+                                        let reason = format!(
+                                            "task was rejected by executor {executor_id}"
+                                        );
+                                        (job_id, reason)
+                                    })
+                                    .collect();
+                                (vec![(executor_id.clone(), freed)], unprepared, rejected)
                             }
                             Err(e) => {
                                 let err_msg = format!("Failed to launch new task: {e}");
@@ -532,7 +550,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                 state
                                     .task_manager
                                     .take_task_reservations(&executor_id, &reservations);
-                                (vec![], HashSet::new())
+                                (vec![], HashMap::new(), HashMap::new())
                             }
                         }
                     }
@@ -540,13 +558,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         error!(
                             "Failed to launch new task, could not get executor metadata: {e}"
                         );
+                        // Bound tasks were already marked Running at bind
+                        // time. Return them to pending before refunding
+                        // vcores, otherwise they hang forever (#2691).
+                        let reset = state
+                            .task_manager
+                            .reset_unlaunched_tasks(&executor_id, &reservations)
+                            .await;
+                        if reset > 0 {
+                            debug!(
+                                "Reset {reset} unlaunched task(s) on executor {executor_id} after metadata miss"
+                            );
+                        }
                         // Refund like the rejected-launch branch: the executor
                         // stays registered, so its reserved vcores must go
                         // back into the budget (see #2686).
                         let freed = state
                             .task_manager
                             .take_task_reservations(&executor_id, &reservations);
-                        (vec![(executor_id.clone(), freed)], HashSet::new())
+                        (
+                            vec![(executor_id.clone(), freed)],
+                            HashMap::new(),
+                            HashMap::new(),
+                        )
                     }
                 }
             });
@@ -557,15 +591,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .await
             .into_iter()
             .collect::<std::result::Result<
-            Vec<(Vec<ExecutorSlot>, HashSet<JobId>)>,
+            Vec<(
+                Vec<ExecutorSlot>,
+                HashMap<JobId, String>,
+                HashMap<JobId, String>,
+            )>,
             tokio::task::JoinError,
         >>()?;
 
         let mut unassigned_executor_slots = Vec::new();
-        let mut failed_jobs = HashSet::new();
-        for (slots, jobs) in results {
+        let mut failed_jobs = HashMap::new();
+        let mut rejections = vec![];
+        for (slots, unprepared, rejected) in results {
             unassigned_executor_slots.extend(slots);
-            failed_jobs.extend(jobs);
+            failed_jobs.extend(unprepared);
+            rejections.extend(rejected);
+        }
+        // A job one executor rejects may also have a task that could not be
+        // prepared for another; the preparation error says what to fix.
+        for (job_id, reason) in rejections {
+            failed_jobs.entry(job_id).or_insert(reason);
         }
 
         Ok((unassigned_executor_slots, failed_jobs))
@@ -633,6 +678,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok(())
     }
 
+    /// Removes `session_id`, and with it the session's `DataFrame::cache()`
+    /// data (see [`remove_session_caches`](Self::remove_session_caches)). The
+    /// session itself is removed even if dropping its caches fails.
+    pub(crate) async fn remove_session(
+        &self,
+        session_id: &str,
+        sender: &EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        let caches = self.remove_session_caches(session_id, sender).await;
+        self.session_manager.remove_session(session_id).await?;
+        caches
+    }
+
     /// Reclaim a finished job's shuffle data and schedule state cleanup. A job
     /// backing a cache (recorded by [`on_job_terminal`](Self::on_job_terminal)
     /// before this runs) keeps its final-stage data until the entry is
@@ -686,7 +744,8 @@ mod tests {
     };
     use crate::test_utils::{
         BlackholeTaskLauncher, RejectingTaskLauncher, aggregation_logical_plan,
-        mock_executor, register_virtual_executor, test_cluster_context,
+        mock_executor, register_virtual_executor, scan_with_file_groups,
+        test_cluster_context,
     };
     use ballista_core::config::{
         BALLISTA_EXECUTION_MODE, BALLISTA_PROPAGATE_EMPTY_ENABLED,
@@ -698,8 +757,11 @@ mod tests {
     };
     use ballista_core::serde::{BallistaCodec, BallistaLogicalExtensionCodec};
     use datafusion::execution::context::SessionConfig;
+    use datafusion::physical_plan::union::UnionExec;
+    use datafusion::physical_plan::{ExecutionPlan, displayable};
 
     use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use std::collections::HashSet;
 
     /// The session config for the tests that bind tasks for two jobs at once.
     ///
@@ -773,7 +835,13 @@ mod tests {
         state.task_manager.record_task_reservations(&bound);
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
-        assert_eq!(failed_jobs, HashSet::from([bad_job.clone()]));
+        assert_eq!(
+            failed_jobs,
+            HashMap::from([(
+                bad_job.clone(),
+                "task was rejected by executor executor-1".to_string()
+            )])
+        );
 
         let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
         assert_eq!(freed, bad_vcores);
@@ -856,9 +924,76 @@ mod tests {
         state.task_manager.record_task_reservations(&bound);
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
-        assert_eq!(failed_jobs, HashSet::from([orphan]));
+        assert_eq!(failed_jobs.into_keys().collect::<Vec<_>>(), [orphan]);
         let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
         assert_eq!(freed, orphaned_vcores);
+
+        Ok(())
+    }
+
+    /// A job can have a task that cannot be prepared for one executor and
+    /// tasks another executor rejects. Its job fails with the preparation
+    /// error, whatever order `launch_tasks` visits the executors in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_prefers_the_preparation_error_to_a_rejection() -> Result<()> {
+        let job = JobId::from("job-mixed");
+        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
+                BallistaCodec::default(),
+                "localhost:50050".to_owned(),
+                Arc::new(SchedulerConfig::default()),
+                Arc::new(RejectingTaskLauncher::only(job.clone())),
+            );
+
+        for executor in ["executor-1", "executor-2"] {
+            register_virtual_executor(&state.executor_manager, executor.to_string(), 8)
+                .await?;
+        }
+
+        let ctx = state
+            .session_manager
+            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .await?;
+        state.task_manager.queue_job(&job, "", timestamp_millis())?;
+        state
+            .task_manager
+            .submit_job(
+                &job,
+                "",
+                ctx,
+                &aggregation_logical_plan(2),
+                timestamp_millis(),
+                None,
+            )
+            .await?;
+
+        let mut bound = state
+            .executor_manager
+            .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
+            .await?;
+        let (_, task) = bound.first().expect("the job has a task to bind");
+        // A split leaf no resolver restricts, on the other executor.
+        let mut unpreparable = task.clone();
+        unpreparable.plan = PayloadExec::leaf(&["p0", "p1", "p2", "p3"]);
+        unpreparable.global_input_partition_ids = vec![0, 1];
+        for (executor_id, _) in bound.iter_mut() {
+            *executor_id = "executor-1".to_string();
+        }
+        bound.push(("executor-2".to_string(), unpreparable));
+
+        let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
+        let sender = EventSender::new(tx_event);
+        state.task_manager.record_task_reservations(&bound);
+        let (_, failed_jobs) = state.launch_tasks(bound, &sender).await?;
+
+        assert_eq!(failed_jobs.len(), 1);
+        assert!(
+            failed_jobs[&job]
+                .contains("the scheduler does not know how to restrict a `PayloadExec`"),
+            "{}",
+            failed_jobs[&job]
+        );
 
         Ok(())
     }
@@ -868,6 +1003,18 @@ mod tests {
     /// reserved vcores must be refunded so they are not stuck until re-register.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn launch_tasks_refunds_vcores_when_executor_metadata_missing() -> Result<()> {
+        // AQE is on by default, so this covers `AdaptiveExecutionGraph`.
+        launch_tasks_metadata_miss_resets_and_refunds(true).await
+    }
+
+    /// Same as above with AQE disabled, covering `StaticExecutionGraph`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_refunds_vcores_when_executor_metadata_missing_static_graph()
+    -> Result<()> {
+        launch_tasks_metadata_miss_resets_and_refunds(false).await
+    }
+
+    async fn launch_tasks_metadata_miss_resets_and_refunds(adaptive: bool) -> Result<()> {
         use crate::cluster::BallistaCluster;
         use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
         use crate::state::session_manager::share_file_statistics_cache;
@@ -898,7 +1045,11 @@ mod tests {
 
         let ctx = state
             .session_manager
-            .create_or_update_session("session", &SessionConfig::new_with_ballista())
+            .create_or_update_session(
+                "session",
+                &SessionConfig::new_with_ballista()
+                    .with_ballista_adaptive_query_planner(adaptive),
+            )
             .await?;
         state
             .task_manager
@@ -921,6 +1072,11 @@ mod tests {
             .await?;
         let bound_vcores: u32 = bound.iter().map(|(_, t)| t.vcores_consumed).sum();
         assert!(bound_vcores > 0);
+        let bound_partitions: usize = bound
+            .iter()
+            .map(|(_, t)| t.global_input_partition_ids.len())
+            .sum();
+        assert!(bound_partitions > 0);
 
         // Simulate a transient metadata miss while the executor remains in the
         // available-vcores budget (the situation #2686 describes).
@@ -936,6 +1092,29 @@ mod tests {
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
         let sender = EventSender::new(tx_event);
         state.task_manager.record_task_reservations(&bound);
+
+        let available_before =
+            state.task_manager.get_available_task_count(&job_id).await?;
+
+        // A reset for another executor or a stale stage attempt must not
+        // touch the slot: task ids restart after a rollback.
+        {
+            let graph = state
+                .task_manager
+                .get_active_execution_graph(&job_id)
+                .expect("job graph should be active");
+            let mut graph = graph.write().await;
+            let (_, task) = &bound[0];
+            assert!(!graph.reset_unlaunched_task(task, "executor-2"));
+            let mut stale = task.clone();
+            stale.stage_attempt_num += 1;
+            assert!(!graph.reset_unlaunched_task(&stale, "executor-1"));
+        }
+        assert_eq!(
+            state.task_manager.get_available_task_count(&job_id).await?,
+            available_before
+        );
+
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
 
         assert!(failed_jobs.is_empty());
@@ -944,6 +1123,16 @@ mod tests {
         assert_eq!(
             unassigned_slots,
             vec![("executor-1".to_string(), bound_vcores)]
+        );
+
+        // #2691: tasks must be pending again so revive can reschedule them.
+        // Exactly the bound partitions come back; nothing else changes.
+        let available_after =
+            state.task_manager.get_available_task_count(&job_id).await?;
+        assert_eq!(
+            available_after,
+            available_before + bound_partitions,
+            "unlaunched tasks should return to pending after a metadata miss"
         );
 
         Ok(())
@@ -968,16 +1157,14 @@ mod tests {
         }
     }
 
-    /// Submits a job of one four-partition `PayloadExec` and binds it to two
-    /// executors of two vcores each, which splits its stage into two tasks.
-    async fn bind_split_payload_stage(
+    /// Submits a job of `plan`, one stage of four partitions, to a scheduler
+    /// with two executors of two vcores each, so binding splits the stage into
+    /// two tasks. Its physical codec carries `PayloadExec`.
+    async fn submit_split_payload_stage(
         config: SchedulerConfig,
         launcher: Arc<CapturingLauncher>,
-    ) -> Result<(
-        SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
-        JobId,
-        Vec<BoundTask>,
-    )> {
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<(SchedulerState<LogicalPlanNode, PhysicalPlanNode>, JobId)> {
         let job_id = JobId::from("job-payload");
         let codec = BallistaCodec::new(
             Arc::new(BallistaLogicalExtensionCodec::default()),
@@ -1017,16 +1204,23 @@ mod tests {
             .queue_job(&job_id, "", timestamp_millis())?;
         state
             .task_manager
-            .submit_physical_plan(
-                &job_id,
-                "",
-                ctx,
-                PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
-                timestamp_millis(),
-                None,
-            )
+            .submit_physical_plan(&job_id, "", ctx, plan, timestamp_millis(), None)
             .await?;
 
+        Ok((state, job_id))
+    }
+
+    /// Submits the job of [`submit_split_payload_stage`] and binds its two tasks.
+    async fn bind_split_payload_stage(
+        config: SchedulerConfig,
+        launcher: Arc<CapturingLauncher>,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<(
+        SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        JobId,
+        Vec<BoundTask>,
+    )> {
+        let (state, job_id) = submit_split_payload_stage(config, launcher, plan).await?;
         let bound = state
             .executor_manager
             .bind_schedulable_tasks(state.task_manager.get_running_job_cache())
@@ -1048,7 +1242,7 @@ mod tests {
     async fn launch(
         state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
         bound: Vec<BoundTask>,
-    ) -> Result<(u32, HashSet<JobId>)> {
+    ) -> Result<(u32, HashMap<JobId, String>)> {
         let (tx_event, _rx_event) = tokio::sync::mpsc::channel(100);
         let sender = EventSender::new(tx_event);
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
@@ -1059,16 +1253,57 @@ mod tests {
     async fn launch_tasks_fails_a_job_whose_split_stage_holds_a_leaf_nobody_can_restrict()
     -> Result<()> {
         let launcher = Arc::new(CapturingLauncher::default());
-        let (state, job_id, bound) =
-            bind_split_payload_stage(SchedulerConfig::default(), launcher.clone())
-                .await?;
+        let (state, job_id, bound) = bind_split_payload_stage(
+            SchedulerConfig::default(),
+            launcher.clone(),
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
         let vcores: u32 = bound.iter().map(|(_, task)| task.vcores_consumed).sum();
 
         let (freed, failed_jobs) = launch(&state, bound).await?;
 
-        assert_eq!(failed_jobs, HashSet::from([job_id]));
+        assert_eq!(failed_jobs.into_keys().collect::<Vec<_>>(), [job_id]);
         assert_eq!(freed, vcores, "the tasks' vcores are refunded");
         assert!(launcher.launched.lock().unwrap().is_empty());
+
+        Ok(())
+    }
+
+    /// Under push-staged scheduling the job status has to carry the reason the
+    /// task could not be prepared, as `poll_work` does under pull-staged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn revive_offers_fails_the_job_with_the_preparation_error() -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        let (state, job_id) = submit_split_payload_stage(
+            SchedulerConfig::default(),
+            launcher,
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
+
+        let (tx_event, mut rx_event) = tokio::sync::mpsc::channel(100);
+        state.revive_offers(EventSender::new(tx_event)).await?;
+
+        let fail_message = loop {
+            match rx_event.recv().await {
+                Some(QueryStageSchedulerEvent::JobRunningFailed {
+                    job_id: failed,
+                    fail_message,
+                    ..
+                }) => {
+                    assert_eq!(failed, job_id);
+                    break fail_message;
+                }
+                Some(_) => continue,
+                None => panic!("the job was never failed"),
+            }
+        };
+        assert!(
+            fail_message
+                .contains("the scheduler does not know how to restrict a `PayloadExec`"),
+            "{fail_message}"
+        );
 
         Ok(())
     }
@@ -1079,17 +1314,36 @@ mod tests {
         let launcher = Arc::new(CapturingLauncher::default());
         let config = SchedulerConfig::default()
             .with_partition_sliceable_resolver(payload_resolver());
-        let (state, _job_id, bound) =
-            bind_split_payload_stage(config, launcher.clone()).await?;
+        let (state, _job_id, bound) = bind_split_payload_stage(
+            config,
+            launcher.clone(),
+            PayloadExec::leaf(&["p0", "p1", "p2", "p3"]),
+        )
+        .await?;
 
         let (freed, failed_jobs) = launch(&state, bound).await?;
 
         assert!(failed_jobs.is_empty());
         assert_eq!(freed, 0, "every task was launched, so no slot is refunded");
 
-        // Decode what the executors would, with the codec the scheduler used.
+        let mut shipped: Vec<Vec<String>> = shipped_writer_inputs(&state, &launcher)
+            .iter()
+            .map(payloads_of)
+            .collect();
+        shipped.sort();
+        assert_eq!(shipped, [["p0", "p1"], ["p2", "p3"]]);
+
+        Ok(())
+    }
+
+    /// The input of the shuffle writer of each task `launcher` launched,
+    /// decoded as the executor would, with the codec the scheduler used.
+    fn shipped_writer_inputs(
+        state: &SchedulerState<LogicalPlanNode, PhysicalPlanNode>,
+        launcher: &CapturingLauncher,
+    ) -> Vec<Arc<dyn ExecutionPlan>> {
         let task_ctx = SessionContext::new().task_ctx();
-        let mut shipped: Vec<Vec<String>> = launcher
+        launcher
             .launched
             .lock()
             .unwrap()
@@ -1104,15 +1358,55 @@ mod tests {
                     })
                     .expect("the executor can decode the plan");
                 // The writer's input can come wrapped in a `CooperativeExec`.
-                let mut input = plan.children()[0];
+                let mut input = plan.children()[0].clone();
                 while input.name() == "CooperativeExec" {
-                    input = input.children()[0];
+                    input = input.children()[0].clone();
                 }
-                payloads_of(input)
+                input
             })
+            .collect()
+    }
+
+    /// A `UnionExec` branch over a leaf the scheduler doesn't know, as an
+    /// Iceberg scan is, runs in the task that owns it and becomes an empty
+    /// leaf in the task that doesn't, with no resolver configured.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn launch_tasks_empties_an_unknown_leaf_in_a_union_branch_another_task_owns()
+    -> Result<()> {
+        let launcher = Arc::new(CapturingLauncher::default());
+        // Partition 0 is the payload's, 1-3 the scan's.
+        let union = UnionExec::try_new(vec![
+            PayloadExec::leaf(&["p0"]),
+            scan_with_file_groups(3),
+        ])?;
+        let (state, _job_id, bound) =
+            bind_split_payload_stage(SchedulerConfig::default(), launcher.clone(), union)
+                .await?;
+
+        let (freed, failed_jobs) = launch(&state, bound).await?;
+
+        assert!(failed_jobs.is_empty());
+        assert_eq!(freed, 0, "every task was launched, so no slot is refunded");
+        let mut shipped: Vec<String> = shipped_writer_inputs(&state, &launcher)
+            .iter()
+            .map(|plan| displayable(plan.as_ref()).indent(false).to_string())
             .collect();
         shipped.sort();
-        assert_eq!(shipped, [["p0", "p1"], ["p2", "p3"]]);
+        assert_eq!(
+            shipped,
+            [
+                "UnionExec\n  \
+                   CooperativeExec\n    \
+                     DataSourceExec: partitions=0, partition_sizes=[]\n  \
+                   DataSourceExec: file_groups={2 groups: [[file1.parquet], \
+                   [file2.parquet]]}, projection=[a], file_type=parquet\n",
+                "UnionExec\n  \
+                   CooperativeExec\n    \
+                     PayloadExec: payloads=[\"p0\"]\n  \
+                   DataSourceExec: file_groups={1 group: [[file0.parquet]]}, \
+                   projection=[a], file_type=parquet\n",
+            ]
+        );
 
         Ok(())
     }
@@ -1160,7 +1454,7 @@ mod tests {
         assert!(!bound.is_empty());
 
         let (unassigned_slots, failed_jobs) = state.launch_tasks(bound, &sender).await?;
-        assert_eq!(failed_jobs, HashSet::from([job]));
+        assert_eq!(failed_jobs.into_keys().collect::<Vec<_>>(), [job]);
         let freed: u32 = unassigned_slots.iter().map(|(_, n)| *n).sum();
         assert_eq!(freed, 0);
 

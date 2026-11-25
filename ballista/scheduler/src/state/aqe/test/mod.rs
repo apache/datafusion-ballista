@@ -114,7 +114,7 @@ impl AdaptivePlanner {
     pub(super) async fn from_logical_sql(
         ctx: &SessionContext,
         sql: &str,
-        rules: Option<&dyn AdaptiveRules>,
+        rules: Option<Arc<dyn AdaptiveRules>>,
     ) -> datafusion::common::Result<Self> {
         let plan = ctx.sql(sql).await?.into_optimized_plan()?;
         Self::try_new(ctx, &plan, "test_job".into(), rules).await
@@ -462,7 +462,7 @@ impl PhysicalOptimizerRule for Recording {
 /// A scheduler embedder whose preparation and replan rules are [`Recording`]
 /// rules. Its replan rule holds back the stages that haven't run when `hold`
 /// is set.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Embedder {
     pub(crate) seen: Arc<Seen>,
     pub(crate) hold: bool,

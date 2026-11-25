@@ -21,6 +21,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
+use ballista_core::serde::scheduler::PartitionLocation;
 use ballista_core::{JobId, JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
@@ -82,6 +83,7 @@ impl Admission {
 
 /// Events that drive the query stage scheduler state machine.
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum QueryStageSchedulerEvent {
     /// A new job has been queued for execution.
     JobQueued {
@@ -141,6 +143,25 @@ pub enum QueryStageSchedulerEvent {
         /// Timestamp when the job failed.
         failed_at: u64,
     },
+    /// A job lost `DataFrame::cache()` data it reads; the stages reading it wait
+    /// until it is provided again.
+    ExternalInputLost {
+        /// The job.
+        job_id: JobId,
+        /// The external stage ids of the lost reads.
+        inputs: Vec<usize>,
+    },
+    /// A job's lost external input is available again.
+    ExternalInputReady {
+        /// The job.
+        job_id: JobId,
+        /// The external stage id of the read.
+        input: usize,
+        /// Its new locations, by partition.
+        locations: Vec<Vec<PartitionLocation>>,
+        /// Timestamp when the job was queued.
+        queued_at: u64,
+    },
     /// A job's execution graph has been updated.
     JobUpdated(JobId),
     /// Request to cancel a job.
@@ -188,6 +209,12 @@ impl Debug for QueryStageSchedulerEvent {
                     f,
                     "JobFinished : job_id={job_id}, queued_at={queued_at}, completed_at={completed_at}.",
                 )
+            }
+            QueryStageSchedulerEvent::ExternalInputLost { job_id, inputs, .. } => {
+                write!(f, "ExternalInputLost : job_id={job_id}, inputs={inputs:?}.")
+            }
+            QueryStageSchedulerEvent::ExternalInputReady { job_id, input, .. } => {
+                write!(f, "ExternalInputReady : job_id={job_id}, input={input}.")
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,

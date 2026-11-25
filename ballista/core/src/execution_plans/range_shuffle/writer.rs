@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -42,7 +43,7 @@ use crate::error::BallistaError;
 use crate::execution_plans::create_shuffle_path;
 use crate::execution_plans::shuffle_writer::{
     ColumnStatsCollector, ShuffleWriteMetrics, WriterState,
-    collect_window_state_operators, handoff_stream, run_coordinator, take_handoff,
+    collect_window_state_operators, handoff_stream, run_coordinator,
 };
 use crate::execution_plans::shuffle_writer_trait::ShuffleWriter;
 use crate::execution_plans::{ObservedWindowState, PartitionedBoundedWindowAggExec};
@@ -183,10 +184,7 @@ impl RangeShuffleWriterExec {
             task_id: 0,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            state: Arc::new(Mutex::new(WriterState {
-                initialized: false,
-                handoffs: (0..output_partition_count).map(|_| None).collect(),
-            })),
+            state: Arc::new(Mutex::new(WriterState::new(output_partition_count))),
             column_stats: ColumnStatsCollector::default(),
         })
     }
@@ -454,35 +452,32 @@ impl ExecutionPlan for RangeShuffleWriterExec {
     /// The first call initializes K oneshot channels and spawns one
     /// coordinator that drives every output partition's write, sending each
     /// summary to its matching partition's oneshot. Callers should spawn all K
-    /// `execute(N, ctx)` calls concurrently so the drains don't serialize.
+    /// `execute(N, ctx)` calls concurrently so the drains don't serialize. If
+    /// every stream returned so far is dropped before its summaries arrive,
+    /// the coordinator stops, and the streams of later calls fail.
     fn execute(
         &self,
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let mut guard = self.state.lock().map_err(|_| {
-            DataFusionError::Internal(
-                "RangeShuffleWriterExec state mutex poisoned".to_owned(),
-            )
-        })?;
-        let state = &mut *guard;
-        let rx = take_handoff(
-            "RangeShuffleWriterExec",
-            &mut state.initialized,
-            &mut state.handoffs,
-            partition,
-            |senders| {
+        let handoff = self
+            .state
+            .lock()
+            .map_err(|_| {
+                DataFusionError::Internal(
+                    "RangeShuffleWriterExec state mutex poisoned".to_owned(),
+                )
+            })?
+            .take_handoff("RangeShuffleWriterExec", partition, |senders| {
                 let writer = self.clone();
-                tokio::spawn(async move {
+                SpawnedTask::spawn(async move {
                     run_coordinator(writer.execute_shuffle_write(context), senders).await;
-                });
-            },
-        )?;
-        drop(guard);
+                })
+            })?;
 
         Ok(handoff_stream(
             "RangeShuffleWriterExec",
-            rx,
+            handoff,
             self.work_dir.clone(),
             self.job_id.clone(),
             self.stage_id,

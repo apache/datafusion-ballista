@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::execution_plan::ExchangeExec;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
@@ -28,7 +29,7 @@ use ballista_core::assert_plan;
 use ballista_core::execution_plans::SortShuffleWriterExec;
 use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ExecutionPlan, displayable};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -458,7 +459,7 @@ async fn newly_built_adaptive_graph_has_expected_state()
         &ctx,
         &logical_plan,
         7,
-        None,
+        SchedulerExtensions::default(),
     )
     .await?;
 
@@ -484,5 +485,102 @@ async fn newly_built_adaptive_graph_has_expected_state()
     assert!(!graph.running_stages().is_empty());
     assert!(graph.available_tasks() > 0);
 
+    Ok(())
+}
+
+/// Runs `sql` through the adaptive planner over the mock table in two
+/// partitions, `t`, and in one, `one`, finishing each stage as soon as it can
+/// run, and displays every stage in the order they ran.
+async fn stages_of(sql: &str) -> datafusion::error::Result<String> {
+    let ctx = mock_context();
+    ctx.register_table("t", mock_memory_table())?;
+    ctx.register_batch("one", mock_batch()?)?;
+    let mut planner = AdaptivePlanner::from_physical_sql(&ctx, sql).await?;
+
+    let mut stages = vec![];
+    while let Some(mut runnable) = planner.runnable_stages()? {
+        runnable.sort_by_key(|stage| stage.plan.stage_id());
+        for stage in runnable {
+            let stage_id = stage.plan.stage_id();
+            let plan = displayable(stage.plan.as_ref()).indent(true);
+            stages.push(format!("stage {stage_id}:\n{plan}"));
+            planner
+                .finalise_stage_internal(stage_id, mock_partitions_with_statistics())?;
+        }
+    }
+    Ok(stages.join("\n"))
+}
+
+/// Each branch of a `UNION ALL` of global aggregates merges its input into one
+/// partition, so it gets a stage of its own once its partial aggregate has
+/// run, and the union's stage, which reads each branch through a shuffle
+/// reader, can be split between tasks.
+#[tokio::test]
+async fn union_of_global_aggregates_stages_each_branch() -> datafusion::error::Result<()>
+{
+    let sql = "select count(*) as n from t where a > 1 \
+               union all select count(*) from t where b > 1";
+    insta::assert_snapshot!(stages_of(sql).await?, @r"
+    stage 0:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+        FilterExec: a@0 > 1, projection=[]
+          DataSourceExec: partitions=2, partition_sizes=[1, 1]
+
+    stage 1:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      AggregateExec: mode=Partial, gby=[], aggr=[count(Int64(1))]
+        FilterExec: b@0 > 1, projection=[]
+          DataSourceExec: partitions=2, partition_sizes=[1, 1]
+
+    stage 2:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      ProjectionExec: expr=[count(Int64(1))@0 as n]
+        AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+          CoalescePartitionsExec
+            ShuffleReaderExec: upstream_stage: 0, partitioning: UnknownPartitioning(2)
+
+    stage 3:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      ProjectionExec: expr=[count(Int64(1))@0 as n]
+        AggregateExec: mode=Final, gby=[], aggr=[count(Int64(1))]
+          CoalescePartitionsExec
+            ShuffleReaderExec: upstream_stage: 1, partitioning: UnknownPartitioning(2)
+
+    stage 4:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      UnionExec
+        ShuffleReaderExec: upstream_stage: 2, partitioning: UnknownPartitioning(1)
+        ShuffleReaderExec: upstream_stage: 3, partitioning: UnknownPartitioning(1)
+    ");
+    Ok(())
+}
+
+/// `ORDER BY` over a `UNION ALL` of one-partition branches sorts each branch
+/// into one partition. Each sort gets a stage of its own, and the merge reads
+/// the sorted readers in its own stage, with no copy of the union between.
+#[tokio::test]
+async fn union_under_order_by_stages_each_sorted_branch() -> datafusion::error::Result<()>
+{
+    let sql = "select a from one union all select b from one order by a";
+    insta::assert_snapshot!(stages_of(sql).await?, @r"
+    stage 0:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      SortExec: expr=[a@0 ASC NULLS LAST], preserve_partitioning=[false]
+        DataSourceExec: partitions=1, partition_sizes=[1]
+
+    stage 1:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      ProjectionExec: expr=[b@0 as a]
+        SortExec: expr=[b@0 ASC NULLS LAST], preserve_partitioning=[false]
+          DataSourceExec: partitions=1, partition_sizes=[1]
+
+    stage 2:
+    ShuffleWriterExec: partitioning: UnknownPartitioning(1)
+      SortPreservingMergeExec: [a@0 ASC NULLS LAST]
+        UnionExec
+          RangeShuffleReaderExec: upstream_stage: 0, partitions: 1, ordering: a@0 ASC NULLS LAST, bounds: none
+          RangeShuffleReaderExec: upstream_stage: 1, partitions: 1, ordering: a@0 ASC NULLS LAST, bounds: none
+    ");
     Ok(())
 }

@@ -76,6 +76,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::utils::memory::RecordBatchMemoryTracker;
 use datafusion::common::{DataFusionError, Result, Statistics, internal_err};
 use datafusion::execution::TaskContext;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -292,17 +293,22 @@ impl ExecutionPlan for BufferExec {
 /// Build the async stream that implements `BufferMode::Dam`.
 ///
 /// Semantics (mirrors `SortExec::reserve_memory_for_batch_and_maybe_spill`):
-/// 1. For each incoming batch, `reservation.try_grow(batch.get_array_memory_size())`.
+/// 1. For each incoming batch, `reservation.try_grow(size)`, where `size` is
+///    what a [`RecordBatchMemoryTracker`] adds for the batch: buffers already
+///    held by an earlier buffered batch (zero-copy slices of one array, as
+///    aggregates emit) are charged once, not once per slice.
 ///    - `Ok`: append to buffer.
 ///    - `Err` and buffer empty: propagate the OOM (nothing to release).
 ///    - `Err` and buffer non-empty: **dam breaks**; drain buffer, then
-///      passthrough. Reservation shrinks per-batch as the buffer drains.
+///      passthrough. Reservation shrinks as the buffer drains.
 /// 2. On stream-end without dam-break: drain buffer, done.
 ///
 /// The reservation is held by the drain stream itself (not the fill
-/// closure), and each yielded batch shrinks it by the exact amount that
-/// was grown at fill time — so pool accounting stays in sync with what's
-/// physically buffered right up until the last batch leaves. The final
+/// closure), and each yielded batch shrinks it by what the tracker frees
+/// when that batch is uncounted: the buffers no other buffered batch still
+/// holds. A buffer shared by several slices stays reserved until the last
+/// of them leaves, so pool accounting stays in sync with what's physically
+/// buffered right up until the last batch leaves. The final
 /// `Drop` on the reservation happens after the last batch is consumed
 /// downstream.
 fn build_dam_stream(
@@ -310,19 +316,24 @@ fn build_dam_stream(
     reservation: MemoryReservation,
 ) -> impl Stream<Item = Result<RecordBatch>> + Send {
     futures::stream::once(async move {
-        // (size_at_fill, batch) — storing the fill-time size guarantees
-        // shrink amounts match grow amounts exactly, even if
-        // `get_array_memory_size()` ever changed between calls.
-        let mut buffered: VecDeque<(usize, RecordBatch)> = VecDeque::new();
+        // (counted, batch) — `counted` is false only for the batch that
+        // broke the dam, which was never reserved and must not be uncounted.
+        let mut buffered: VecDeque<(bool, RecordBatch)> = VecDeque::new();
         let mut dam_broken = false;
+        // Reference-counts each buffer across the buffered batches: a buffer
+        // shared by several slices is charged when the first one arrives and
+        // released when the last one leaves.
+        let mut tracker = RecordBatchMemoryTracker::new();
 
         // Fill phase: read and buffer until pool pressure or end-of-stream.
         while let Some(batch) = input.next().await {
             let batch = batch?;
-            let size = batch.get_array_memory_size();
+            let size = tracker.count_batch(&batch);
             match reservation.try_grow(size) {
-                Ok(_) => buffered.push_back((size, batch)),
+                Ok(_) => buffered.push_back((true, batch)),
                 Err(err) => {
+                    // Not reserved, so take it back out of the tracker.
+                    tracker.uncount_batch(&batch);
                     if buffered.is_empty() {
                         return Err(oom_context(err));
                     }
@@ -331,7 +342,7 @@ fn build_dam_stream(
                     // a one-batch reservation overshoot at the moment of
                     // break — same as SortExec's behaviour on the batch
                     // that triggers spill).
-                    buffered.push_back((0, batch));
+                    buffered.push_back((false, batch));
                     dam_broken = true;
                     break;
                 }
@@ -339,16 +350,20 @@ fn build_dam_stream(
         }
 
         // Drain phase: yield each buffered batch and shrink the reservation
-        // by the amount it took at fill time. `unfold` owns the reservation,
+        // by what the tracker frees for it. The batch is uncounted before it
+        // is yielded, while its buffers are still alive, as the tracker
+        // requires. `unfold` owns the reservation,
         // so the final `Drop` fires after the last batch has been consumed
         // downstream — no window where the reservation is released while
         // batches are still live in this operator.
         let drained = futures::stream::unfold(
-            (buffered, reservation),
-            |(mut buf, res)| async move {
-                let (size, batch) = buf.pop_front()?;
-                res.shrink(size);
-                Some((Ok::<_, DataFusionError>(batch), (buf, res)))
+            (buffered, reservation, tracker),
+            |(mut buf, res, mut tracker)| async move {
+                let (counted, batch) = buf.pop_front()?;
+                if counted {
+                    res.shrink(tracker.uncount_batch(&batch));
+                }
+                Some((Ok::<_, DataFusionError>(batch), (buf, res, tracker)))
             },
         );
         let out: futures::stream::BoxStream<'static, Result<RecordBatch>> = if dam_broken
@@ -479,10 +494,9 @@ mod tests {
     #[tokio::test]
     async fn dam_reservation_shrinks_incrementally_during_drain() -> Result<()> {
         let src_batches = batches(100, 5);
-        let sizes: Vec<usize> = src_batches
-            .iter()
-            .map(|b| b.get_array_memory_size())
-            .collect();
+        let mut tracker = RecordBatchMemoryTracker::new();
+        let sizes: Vec<usize> =
+            src_batches.iter().map(|b| tracker.count_batch(b)).collect();
         let total: usize = sizes.iter().sum();
 
         let src = memory_source(src_batches);
@@ -521,6 +535,45 @@ mod tests {
 
         assert!(stream.next().await.is_none(), "stream exhausted");
         assert_eq!(pool.reserved(), 0, "reservation released after stream end");
+        Ok(())
+    }
+
+    /// Zero-copy slices of one batch (as aggregates emit) share one
+    /// buffer, which the dam must charge once rather than once per slice,
+    /// and keep reserved until the last slice has left.
+    #[tokio::test]
+    async fn dam_charges_buffer_shared_by_slices_once() -> Result<()> {
+        let whole = batches(10_000, 1).remove(0);
+        let whole_size = RecordBatchMemoryTracker::new().count_batch(&whole);
+        let slices: Vec<RecordBatch> =
+            (0..10).map(|i| whole.slice(i * 1_000, 1_000)).collect();
+        drop(whole);
+
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(10 * 1024 * 1024));
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(pool.clone())
+            .build_arc()
+            .expect("runtime");
+        let session = SessionContext::new_with_config_rt(SessionConfig::new(), runtime);
+
+        let dam: Arc<dyn ExecutionPlan> =
+            Arc::new(BufferExec::try_new(memory_source(slices), BufferMode::Dam)?);
+        let mut stream = dam.execute(0, session.task_ctx())?;
+
+        // The first pull buffers all ten slices. The shared buffer is
+        // charged once (charging each slice would reserve 10 * whole_size)
+        // and stays reserved while the other nine slices still hold it.
+        for i in 0..9 {
+            let batch = stream.next().await.expect("more batches")?;
+            assert_eq!(batch.num_rows(), 1_000, "slice {i}");
+            assert_eq!(pool.reserved(), whole_size, "after slice {i}");
+        }
+
+        // The last slice releases the shared buffer.
+        let last = stream.next().await.expect("last batch")?;
+        assert_eq!(last.num_rows(), 1_000);
+        assert_eq!(pool.reserved(), 0, "released with the last slice");
+        assert!(stream.next().await.is_none(), "stream exhausted");
         Ok(())
     }
 }

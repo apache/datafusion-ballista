@@ -17,7 +17,10 @@
 
 //! Rules a scheduler embedder adds to adaptive query planning.
 
+use ballista_core::execution_plans::CoalescePlan;
+use datafusion::common::Result;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::ExecutionPlan;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -49,7 +52,52 @@ pub trait AdaptiveRules: Debug + Send + Sync {
     /// hasn't started by marking its exchange inactive, and release it on a
     /// later replan. A rule must leave the stage boundaries valid: no other
     /// rule runs after it to place an exchange that a change needs.
+    ///
+    /// In particular, a rule must not put a node that keeps its own partition
+    /// count, such as a `SortExec` that merges its input, into a `UnionExec`
+    /// branch without an exchange above it. When the union's stage is split
+    /// between tasks, the scheduler can't restrict that branch and fails the
+    /// task.
     fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
         vec![]
+    }
+
+    /// Whether `plan`, a node of your own between a stage's root and the
+    /// shuffles it reads, produces the same rows when those shuffles are read
+    /// with fewer, coalesced partitions (`ballista.planner.coalesce.enabled`).
+    ///
+    /// Coalescing groups neighbouring upstream partitions with one mapping
+    /// for every shuffle the stage reads, so hash co-partitioning is kept. A
+    /// node that only needs that, such as a join or an aggregate over hash
+    /// partitioned inputs, tolerates it. A node that depends on the partition
+    /// count or index itself does not. The default, `false`, leaves every
+    /// stage with such a node uncoalesced.
+    ///
+    /// Asked only about nodes Ballista doesn't know, as the plan is
+    /// optimized after each stage completes.
+    fn tolerates_partition_count_change(&self, _plan: &dyn ExecutionPlan) -> bool {
+        false
+    }
+
+    /// Rebuilds `plan`, a node [`Self::tolerates_partition_count_change`]
+    /// accepted, over `children` once the shuffles below it are read as
+    /// `coalesce` describes, or returns `None` to rebuild it with
+    /// [`ExecutionPlan::with_new_children`].
+    ///
+    /// A node that keeps per-partition state of its own beside its inputs,
+    /// such as a child with one row per partition, rebuilds that state for
+    /// `coalesce.groups.len()` partitions here. Upstream partition `i` is
+    /// read by the output partition whose group lists `i`.
+    ///
+    /// `children` are already rebuilt, with every shuffle reader in them
+    /// coalesced. Called when the stage is turned into the plan its tasks
+    /// run.
+    fn with_coalesced_children(
+        &self,
+        _plan: &Arc<dyn ExecutionPlan>,
+        _children: Vec<Arc<dyn ExecutionPlan>>,
+        _coalesce: &CoalescePlan,
+    ) -> Option<Result<Arc<dyn ExecutionPlan>>> {
+        None
     }
 }
