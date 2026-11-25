@@ -18,6 +18,7 @@
 //! Job-success lifecycle tests for the adaptive execution graph.
 
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
@@ -25,11 +26,9 @@ use crate::test_utils::{
     mock_completed_task, mock_executor, revive_graph_and_complete_next_stage,
 };
 use ballista_core::error::Result;
-use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::{OperatorMetricsSet, job_status};
 use ballista_core::utils::collect_plan_metrics;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 /// Plans `sql` as an adaptive job and completes its stages one by one until
 /// the job succeeds. While the job is running no stage may be reported as
@@ -62,8 +61,7 @@ async fn plan_job(sql: &str) -> Result<AdaptiveExecutionGraph> {
         &ctx,
         &logical_plan,
         0,
-        None,
-        Arc::new(BallistaPhysicalExtensionCodec::default()),
+        SchedulerExtensions::default(),
     )
     .await
 }

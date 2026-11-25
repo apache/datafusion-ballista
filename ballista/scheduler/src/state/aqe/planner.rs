@@ -29,6 +29,7 @@ use crate::state::aqe::optimizer_rule::{
     ParallelWindowRule, PinSubmittedShufflesRule, PrefixWindowRule,
     PropagateEmptyExecRule, SelectJoinRule,
 };
+use crate::state::aqe::plan_change_log::{Pass, PlanChangeLog};
 use crate::state::aqe::reuse_exchange::{ReuseKey, reuse_key};
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_stage::StageOutput;
@@ -46,7 +47,7 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_optimizer::ensure_requirements::EnsureRequirements;
-use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties, displayable};
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::physical_planner::DefaultPhysicalPlanner;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::debug;
@@ -110,6 +111,9 @@ pub struct AdaptivePlanner {
     /// [`reuse_key`] encodes them with too. The session's codec unless
     /// [`Self::with_physical_codec`] sets the scheduler's.
     physical_codec: Arc<dyn PhysicalExtensionCodec>,
+    /// The scheduler embedder's rules, if any, which partition coalescing
+    /// asks about operators of their own.
+    adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
     runtime_filters: Option<super::runtime_filter_planner::RuntimeFilterPlanner>,
 }
 
@@ -140,9 +144,6 @@ impl AdaptivePlanner {
     ) -> common::Result<Self> {
         let session_state =
             Self::create_session_state(state_builder, physical_optimizer_rules);
-        let planner = DefaultPhysicalPlanner::default();
-        let plan = planner.optimize_physical_plan(plan, &session_state, |_, _| {})?;
-
         let runtime_filters = session_state
             .config()
             .options()
@@ -151,18 +152,21 @@ impl AdaptivePlanner {
             .is_some_and(|c| c.runtime_filter_enabled())
             .then(super::runtime_filter_planner::RuntimeFilterPlanner::default);
         let physical_codec = session_state.config().ballista_physical_extension_codec();
-        Ok(Self {
+        let mut planner = Self {
             runtime_filters,
             physical_codec,
+            adaptive_rules: None,
             stage_id_generator: 0, // FIXME: compatibility issue with static where stages start from 1
             session_state,
-            physical_planner: planner.into(),
+            physical_planner: DefaultPhysicalPlanner::default().into(),
             plan,
             runnable_stage_cache: HashMap::new(),
             job_id,
             runnable_stage_output: HashMap::new(),
             reusable_stages: HashMap::new(),
-        })
+        };
+        planner.replan_stages(Pass::Initial)?;
+        Ok(planner)
     }
 
     /// Creates a new `AdaptivePlanner` with default physical optimizer rules,
@@ -181,7 +185,7 @@ impl AdaptivePlanner {
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         job_id: JobId,
-        rules: Option<&dyn AdaptiveRules>,
+        rules: Option<Arc<dyn AdaptiveRules>>,
     ) -> common::Result<Self> {
         // session state with very limited set of optimizers.
         // this optimizer set will be executed only once, before
@@ -192,7 +196,7 @@ impl AdaptivePlanner {
         let mut preparation_optimizers =
             Self::plan_preparation_optimizers(plan_id_generator.clone());
         let mut replan_optimizers = vec![];
-        if let Some(rules) = rules {
+        if let Some(rules) = &rules {
             preparation_optimizers
                 .extend(rules.preparation_rules(plan_id_generator.clone()));
             replan_optimizers = rules.replan_rules(plan_id_generator.clone());
@@ -220,12 +224,14 @@ impl AdaptivePlanner {
             .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
         let state_builder = SessionStateBuilder::from(ctx.state());
-        Self::try_new_with_optimizers(
+        let mut planner = Self::try_new_with_optimizers(
             state_builder,
             plan,
             job_id,
             Self::default_optimizers_with(plan_id_generator, replan_optimizers),
-        )
+        )?;
+        planner.adaptive_rules = rules;
+        Ok(planner)
     }
 
     /// Creates a new `AdaptivePlanner` over an already-built physical plan,
@@ -254,14 +260,14 @@ impl AdaptivePlanner {
         ctx: &SessionContext,
         plan: Arc<dyn ExecutionPlan>,
         job_id: JobId,
-        rules: Option<&dyn AdaptiveRules>,
+        rules: Option<Arc<dyn AdaptiveRules>>,
     ) -> common::Result<Self> {
         let plan_id_generator = Arc::new(AtomicUsize::new(0));
 
         let mut preparation_optimizers =
             Self::plan_preparation_optimizers(plan_id_generator.clone());
         let mut replan_optimizers = vec![];
-        if let Some(rules) = rules {
+        if let Some(rules) = &rules {
             preparation_optimizers
                 .extend(rules.preparation_rules(plan_id_generator.clone()));
             replan_optimizers = rules.replan_rules(plan_id_generator.clone());
@@ -281,12 +287,14 @@ impl AdaptivePlanner {
             |_, _| {},
         )?;
 
-        Self::try_new_with_optimizers(
+        let mut planner = Self::try_new_with_optimizers(
             SessionStateBuilder::from(ctx.state()),
             plan,
             job_id,
             Self::default_optimizers_with(plan_id_generator, replan_optimizers),
-        )
+        )?;
+        planner.adaptive_rules = rules;
+        Ok(planner)
     }
 
     /// Matches stages for exchange reuse on their encoding under `codec`, the
@@ -383,12 +391,12 @@ impl AdaptivePlanner {
                     stage.resolve_column_statistics(column_statistics);
                 }
                 stage.resolve_shuffle_partitions(partitions);
-                self.replan_stages()?;
+                self.replan_stages(Pass::StageFinished(stage_id))?;
                 Ok(())
             }
             Some((None, Some(stage))) => {
                 stage.resolve_shuffle_partitions(partitions);
-                self.replan_stages()?;
+                self.replan_stages(Pass::StageFinished(stage_id))?;
                 Ok(())
             }
             _ => exec_err!(
@@ -475,36 +483,35 @@ impl AdaptivePlanner {
         self.finalise_stage(stage_id, partitions, Some(column_statistics))
     }
 
-    /// Replans the stages by applying physical optimizations.
+    /// Replans the stages by applying physical optimizations, logging each
+    /// rule that changes the plan (see [`PlanChangeLog`]).
     ///
     /// # Returns
     /// A `Result` indicating success or failure.
-    fn replan_stages(&mut self) -> common::Result<()> {
+    fn replan_stages(&mut self, pass: Pass) -> common::Result<()> {
         let interval = Instant::now();
-        let mut plan = self.plan.clone();
-
-        debug!(
-            "Distributed physical plan (before optimization):\n{}\n",
-            displayable(plan.as_ref()).indent(false)
-        );
-
-        plan = self.physical_planner.optimize_physical_plan(
-            plan.clone(),
+        let mut changes = PlanChangeLog::new(&self.job_id, pass, self.plan.as_ref());
+        let plan = self.physical_planner.optimize_physical_plan(
+            Arc::clone(&self.plan),
             &self.session_state,
-            |_, _| {},
+            |plan, rule| changes.record(rule.name(), plan),
         )?;
-
-        debug!(
-            "Distributed physical plan (after optimization):\n{}\n",
-            displayable(plan.as_ref()).indent(false)
-        );
-
+        // Leave out the time the plan change log took, which is only spent
+        // while it is enabled, and log the changes before the timing.
+        let elapsed = interval.elapsed();
+        let overhead = changes.overhead();
+        drop(changes);
         self.plan = plan;
 
-        debug!(
-            "Total time taken for stage replan: {:?}",
-            interval.elapsed()
-        );
+        if overhead.is_zero() {
+            debug!("Job {}: {pass} took {elapsed:?}", self.job_id);
+        } else {
+            debug!(
+                "Job {}: {pass} took {:?}, not counting {overhead:?} logging plan changes",
+                self.job_id,
+                elapsed.saturating_sub(overhead)
+            );
+        }
 
         Ok(())
     }
@@ -531,23 +538,39 @@ impl AdaptivePlanner {
                     filters.discover(&self.plan)?;
                 }
                 let config = self.session_state.config().options();
+                let coalesce = CoalescePartitionsRule::new(self.adaptive_rules.clone());
                 let (stage_ids, shuffle_writers) = stages
                     .into_iter()
-                    .map(|plan| {
+                    .map(|mut plan| {
+                        let mut changes = PlanChangeLog::new(
+                            &self.job_id,
+                            Pass::Stage(launched_stage_id(&plan)),
+                            plan.as_ref(),
+                        );
                         // Run the coalesce rule per-stage: the root of `plan` is
                         // the stage's wrapper exchange, so the rule's walker sees
                         // only this stage's input exchanges as the alignment
                         // group. This avoids cross-stage gluing and stale state
                         // that would arise if the rule walked the entire residual
                         // plan in `default_optimizers()`.
-                        let plan = CoalescePartitionsRule.optimize(plan, config)?;
-                        let plan = OptimizeSkewedJoinRule.optimize(plan, config)?;
-                        let plan = match &mut self.runtime_filters {
-                            Some(filters) => filters.instrument(plan)?,
-                            None => plan,
-                        };
-                        BallistaAdapter::adapt_to_ballista(plan, &self.job_id, config)
-                            .map(|w| (w.plan.stage_id(), w))
+                        let stage_rules: [&dyn PhysicalOptimizerRule; 2] =
+                            [&coalesce, &OptimizeSkewedJoinRule];
+                        for rule in stage_rules {
+                            plan = rule.optimize(plan, config)?;
+                            changes.record(rule.name(), plan.as_ref());
+                        }
+                        if let Some(filters) = &mut self.runtime_filters {
+                            plan = filters.instrument(plan)?;
+                            changes.record("RuntimeFilterPlanner", plan.as_ref());
+                        }
+                        drop(changes);
+                        BallistaAdapter::adapt_to_ballista(
+                            plan,
+                            &self.job_id,
+                            config,
+                            self.adaptive_rules.clone(),
+                        )
+                        .map(|w| (w.plan.stage_id(), w))
                     })
                     .collect::<common::Result<(HashSet<_>, Vec<_>)>>()?;
 
@@ -610,8 +633,16 @@ impl AdaptivePlanner {
                 if exchange.inactive_stage || exchange.stage_id().is_some() {
                     continue;
                 }
-                let Some(key) = reuse_key(exec, &codec) else {
-                    continue;
+                let key = match reuse_key(exec, exchange, &codec) {
+                    Ok(key) => key,
+                    Err(reason) => {
+                        debug!(
+                            "Job {}: exchange {} can't share a stage: {reason}",
+                            self.job_id,
+                            exchange.plan_id()
+                        );
+                        continue;
+                    }
                 };
                 let earlier = match self.reusable_stages.get(&key) {
                     Some(earlier) if self.stage_is_readable(earlier) => {
@@ -638,7 +669,7 @@ impl AdaptivePlanner {
                     );
                 }
                 self.share_stages(&readers)?;
-                self.replan_stages()?;
+                self.replan_stages(Pass::StageReused)?;
                 continue;
             }
 
@@ -684,7 +715,8 @@ impl AdaptivePlanner {
                     return Ok(Transformed::no(node));
                 };
                 debug!(
-                    "exchange reuse: exchange {} reads the stage of exchange {}",
+                    "Job {}: exchange {} reads the stage of exchange {}",
+                    self.job_id,
                     exchange.plan_id(),
                     as_exchange(earlier).plan_id()
                 );
@@ -968,6 +1000,17 @@ fn count_exchanges(plan: &Arc<dyn ExecutionPlan>) -> usize {
         Ok(TreeNodeRecursion::Continue)
     });
     exchanges
+}
+
+/// The stage id of `root`, the exchange or `AdaptiveDatafusionExec` a stage's
+/// plan starts at, if it has one.
+fn launched_stage_id(root: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+    match root.downcast_ref::<ExchangeExec>() {
+        Some(exchange) => exchange.stage_id(),
+        None => root
+            .downcast_ref::<AdaptiveDatafusionExec>()
+            .and_then(|adaptive| adaptive.stage_id()),
+    }
 }
 
 fn as_exchange(plan: &Arc<dyn ExecutionPlan>) -> &ExchangeExec {

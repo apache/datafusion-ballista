@@ -36,6 +36,7 @@ use ballista_core::execution_plans::{
     PartitionedBoundedWindowAggExec, PrefixMergeExec, RangeFilterExec, cut_partitions,
     merge_runtime_stats_reports, prefix_merge_window_state, repartition_routing_expr,
 };
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
@@ -71,6 +72,7 @@ pub mod adaptive_rules;
 pub(crate) mod coalesce;
 pub(crate) mod execution_plan;
 pub mod optimizer_rule;
+pub(crate) mod plan_change_log;
 pub mod planner;
 pub(crate) mod reuse_exchange;
 mod runtime_filter;
@@ -151,28 +153,48 @@ pub(crate) struct AdaptiveExecutionGraph {
     logical_plan: Option<String>,
 }
 
+/// What the scheduler, rather than the job's session, adds to planning a job
+/// adaptively.
+#[derive(Debug, Clone)]
+pub(crate) struct SchedulerExtensions {
+    /// The codec the scheduler ships stages with, which exchange reuse
+    /// matches stages on.
+    pub(crate) physical_codec: Arc<dyn PhysicalExtensionCodec>,
+    /// See [`SchedulerConfig::adaptive_rules`](crate::config::SchedulerConfig::adaptive_rules).
+    pub(crate) adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
+}
+
+impl Default for SchedulerExtensions {
+    fn default() -> Self {
+        Self {
+            physical_codec: Arc::new(BallistaPhysicalExtensionCodec::default()),
+            adaptive_rules: None,
+        }
+    }
+}
+
 impl AdaptiveExecutionGraph {
     /// Creates a new `ExecutionGraph` from a physical execution plan.
     ///
     /// This will use the `DistributedPlanner` to break the plan into stages
     /// and build the DAG structure needed for distributed execution.
-    ///
-    /// `physical_codec` is the codec the scheduler ships stages with, which
-    /// exchange reuse matches stages on.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn try_new(
+    pub(crate) async fn try_new(
         scheduler_id: &str,
         job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         queued_at: u64,
-        rules: Option<&dyn AdaptiveRules>,
-        physical_codec: Arc<dyn PhysicalExtensionCodec>,
+        extensions: SchedulerExtensions,
     ) -> ballista_core::error::Result<Self> {
-        let planner = AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules)
-            .await?
-            .with_physical_codec(physical_codec);
+        let planner = AdaptivePlanner::try_new(
+            ctx,
+            logical_plan,
+            job_id.clone(),
+            extensions.adaptive_rules,
+        )
+        .await?
+        .with_physical_codec(extensions.physical_codec);
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
         Self::try_new_with_planner(
@@ -189,26 +211,23 @@ impl AdaptiveExecutionGraph {
     /// Creates a new `ExecutionGraph` from an already-built physical plan.
     ///
     /// The plan is prepared and staged by [`AdaptivePlanner::try_new_from_physical`];
-    /// the graph has no logical plan to display. `physical_codec` is as in
-    /// [`Self::try_new`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn try_new_from_physical(
+    /// the graph has no logical plan to display.
+    pub(crate) fn try_new_from_physical(
         scheduler_id: &str,
         job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
         physical_plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
-        rules: Option<&dyn AdaptiveRules>,
-        physical_codec: Arc<dyn PhysicalExtensionCodec>,
+        extensions: SchedulerExtensions,
     ) -> ballista_core::error::Result<Self> {
         let planner = AdaptivePlanner::try_new_from_physical(
             ctx,
             physical_plan,
             job_id.clone(),
-            rules,
+            extensions.adaptive_rules,
         )?
-        .with_physical_codec(physical_codec);
+        .with_physical_codec(extensions.physical_codec);
 
         Self::try_new_with_planner(
             scheduler_id,

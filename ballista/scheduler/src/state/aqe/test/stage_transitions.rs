@@ -19,12 +19,12 @@
 //! graph unchanged, matching the static graph.
 
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
 use crate::test_utils::{fail_plan_rewrites, revive_graph_and_complete_next_stage};
 use ballista_core::error::Result;
-use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -45,8 +45,7 @@ async fn test_aggregation_plan() -> Result<AdaptiveExecutionGraph> {
         &ctx,
         &logical_plan,
         0,
-        None,
-        Arc::new(BallistaPhysicalExtensionCodec::default()),
+        SchedulerExtensions::default(),
     )
     .await
 }

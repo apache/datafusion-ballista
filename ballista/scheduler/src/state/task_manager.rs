@@ -22,6 +22,7 @@ use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
@@ -377,8 +378,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             &ctx,
                             logical_plan,
                             queued_at,
-                            self.adaptive_rules.as_deref(),
-                            self.codec.physical_extension_codec_arc(),
+                            self.scheduler_extensions(),
                         )
                         .await?,
                     ) as ExecutionGraphBox
@@ -419,8 +419,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         &ctx,
                         physical_plan.clone(),
                         queued_at,
-                        self.adaptive_rules.as_deref(),
-                        self.codec.physical_extension_codec_arc(),
+                        self.scheduler_extensions(),
                     )?) as ExecutionGraphBox
                 } else {
                     debug!("Using static query planner for physical-plan job submission");
@@ -455,6 +454,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .insert(job_id.to_owned(), JobInfoCache::new(graph));
 
         Ok(())
+    }
+
+    /// What this scheduler adds to planning a job adaptively.
+    fn scheduler_extensions(&self) -> SchedulerExtensions {
+        SchedulerExtensions {
+            physical_codec: self.codec.physical_extension_codec_arc(),
+            adaptive_rules: self.adaptive_rules.clone(),
+        }
     }
 
     /// Submit a logical plan for distributed execution.
@@ -1645,8 +1652,7 @@ mod tests {
             &ctx,
             &plan,
             0,
-            None,
-            Arc::new(ballista_core::serde::BallistaPhysicalExtensionCodec::default()),
+            SchedulerExtensions::default(),
         )
         .await?;
         graph.revive();
