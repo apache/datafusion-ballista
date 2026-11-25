@@ -17,4 +17,5 @@
 
 //! Fixtures shared by tests and benchmarks across the Ballista crates.
 
+pub mod logical_plan_hook;
 pub mod tpch;

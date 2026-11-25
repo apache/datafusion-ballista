@@ -22,7 +22,6 @@
 #![cfg(feature = "flight-sql")]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use arrow_flight::sql::client::FlightSqlServiceClient;
@@ -30,9 +29,9 @@ use arrow_flight::sql::{CommandGetTables, SqlInfo};
 use ballista_core::config::{BALLISTA_EXECUTION_MODE, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigExt;
-use ballista_core::logical_plan_hook::LogicalPlanHook;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
+use ballista_core::test_utils::logical_plan_hook::CountRuns;
 use ballista_core::utils::{
     GrpcClientConfig, create_grpc_client_connection, default_config_producer,
     default_session_builder,
@@ -44,13 +43,8 @@ use ballista_scheduler::scheduler_process::start_grpc_service_with_listener;
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches;
-use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::exec_err;
-use datafusion::common::tree_node::Transformed;
-use datafusion::datasource::provider_as_source;
 use datafusion::execution::SessionStateBuilder;
-use datafusion::logical_expr::LogicalPlan;
-use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::TryStreamExt;
 use tonic::transport::Channel;
@@ -165,6 +159,16 @@ async fn connect_with_retry(url: &str) -> Result<SchedulerGrpcClient<Channel>> {
     Err(BallistaError::General(format!("scheduler at {url} did not come up")).into())
 }
 
+/// Connects a Flight SQL client to the scheduler at `url` and authenticates.
+async fn connect(url: &str) -> Result<FlightSqlServiceClient<Channel>> {
+    let channel =
+        create_grpc_client_connection(url.to_string(), &GrpcClientConfig::default())
+            .await?;
+    let mut client = FlightSqlServiceClient::new(channel);
+    client.handshake("anonymous", "").await?;
+    Ok(client)
+}
+
 /// Connects a Flight SQL client, authenticates, and registers a `people` table
 /// for it to query.
 ///
@@ -173,11 +177,7 @@ async fn connect_with_retry(url: &str) -> Result<SchedulerGrpcClient<Channel>> {
 async fn client_with_people(
     url: &str,
 ) -> Result<(FlightSqlServiceClient<Channel>, tempfile::TempDir)> {
-    let channel =
-        create_grpc_client_connection(url.to_string(), &GrpcClientConfig::default())
-            .await?;
-    let mut client = FlightSqlServiceClient::new(channel);
-    client.handshake("anonymous", "").await?;
+    let mut client = connect(url).await?;
 
     let csv = tempfile::tempdir()?;
     let path = csv.path().join("data.csv");
@@ -347,79 +347,21 @@ async fn flight_sql_supports_prepared_statements() -> Result {
     Ok(())
 }
 
-/// Swaps each scan of `people` for the next of `versions` on every run, as a
-/// table format's hook would swap in the version its catalog serves when the
-/// query runs.
-#[derive(Debug)]
-struct NextVersion {
-    versions: Vec<Arc<dyn TableProvider>>,
-    runs: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl LogicalPlanHook for NextVersion {
-    async fn before_submit(
-        &self,
-        plan: LogicalPlan,
-        _session: &dyn Session,
-    ) -> datafusion::error::Result<LogicalPlan> {
-        let run = self.runs.fetch_add(1, Ordering::SeqCst);
-        let Some(version) = self.versions.get(run) else {
-            return exec_err!("people has no version {run}");
-        };
-        plan.transform_up_with_subqueries(|node| match node {
-            LogicalPlan::TableScan(mut scan) if scan.table_name.table() == "people" => {
-                scan.source = provider_as_source(Arc::clone(version));
-                Ok(Transformed::yes(LogicalPlan::TableScan(scan)))
-            }
-            node => Ok(Transformed::no(node)),
-        })
-        .map(|transformed| transformed.data)
-    }
-}
-
-/// A prepared statement is planned once, but a logical plan hook runs on the
-/// scheduler each time it's executed.
+/// A prepared statement is planned once, but the scheduler runs its logical
+/// plan hooks each time it's executed. Preparing it and the DDL before it run
+/// none.
 #[tokio::test]
 async fn flight_sql_runs_logical_plan_hooks_on_each_execution() -> Result {
-    let versions = tempfile::tempdir()?;
-    let local = SessionContext::new();
-    let mut providers = Vec::new();
-    for (name, rows) in [("v1", "1,dave\n"), ("v2", "1,dave\n2,erin\n")] {
-        let path = versions.path().join(format!("{name}.csv"));
-        std::fs::write(&path, format!("id,name\n{rows}"))?;
-        local
-            .register_csv(name, path.to_str().unwrap(), CsvReadOptions::new())
-            .await?;
-        providers.push(local.table_provider(name).await?);
-    }
-    let hook = NextVersion {
-        versions: providers,
-        runs: AtomicUsize::new(0),
-    };
-    let config =
-        default_config_producer().with_ballista_logical_plan_hook(Arc::new(hook));
+    let config = default_config_producer()
+        .with_ballista_logical_plan_hook(Arc::new(CountRuns::default()));
     let url = start_cluster_with_config(config).await?;
-    let (mut client, _csv) = client_with_people(&url).await?;
+    let mut client = connect(&url).await?;
 
-    let mut prepared = client
-        .prepare("SELECT id, name FROM people ORDER BY id".to_string(), None)
-        .await?;
-    for expected in [
-        "+----+------+\n\
-         | id | name |\n\
-         +----+------+\n\
-         | 1  | dave |\n\
-         +----+------+",
-        "+----+------+\n\
-         | id | name |\n\
-         +----+------+\n\
-         | 1  | dave |\n\
-         | 2  | erin |\n\
-         +----+------+",
-    ] {
+    let mut prepared = client.prepare("SELECT 0 AS run".to_string(), None).await?;
+    for run in ["| 1   |", "| 2   |"] {
         let info = prepared.execute().await?;
         let batches = collect(&mut client, info).await?;
+        let expected = format!("+-----+\n| run |\n+-----+\n{run}\n+-----+");
         assert_eq!(pretty_format_batches(&batches)?.to_string(), expected);
     }
     prepared.close().await?;

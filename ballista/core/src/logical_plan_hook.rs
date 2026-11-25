@@ -96,14 +96,15 @@ pub async fn run_logical_plan_hooks(
 mod tests {
     use std::sync::Arc;
 
-    use datafusion::common::exec_err;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::logical_expr::LogicalPlanBuilder;
     use datafusion::prelude::SessionConfig;
 
     use super::*;
+    use crate::test_utils::logical_plan_hook::AlwaysFail;
 
-    /// Limits the plan to `self.0` rows, failing instead if `self.0` is 0.
+    /// Limits the plan to `self.0` rows, so the plan shows which hooks ran and
+    /// in what order.
     #[derive(Debug)]
     struct Limit(usize);
 
@@ -114,19 +115,20 @@ mod tests {
             plan: LogicalPlan,
             _session: &dyn Session,
         ) -> Result<LogicalPlan> {
-            if self.0 == 0 {
-                return exec_err!("no rows allowed");
-            }
             LogicalPlanBuilder::from(plan)
                 .limit(0, Some(self.0))?
                 .build()
         }
     }
 
-    async fn submit(hooks: &[usize]) -> Result<String> {
-        let config = hooks.iter().fold(SessionConfig::new(), |config, fetch| {
-            config.with_ballista_logical_plan_hook(Arc::new(Limit(*fetch)))
-        });
+    /// Adds `hooks` to a session's config in order, then runs them on an empty
+    /// plan and returns the result.
+    async fn run_hooks(hooks: Vec<Arc<dyn LogicalPlanHook>>) -> Result<String> {
+        let config = hooks
+            .into_iter()
+            .fold(SessionConfig::new(), |config, hook| {
+                config.with_ballista_logical_plan_hook(hook)
+            });
         let state = SessionStateBuilder::new().with_config(config).build();
         let plan = LogicalPlanBuilder::empty(true).build()?;
         let plan = run_logical_plan_hooks(plan, &state).await?;
@@ -135,14 +137,16 @@ mod tests {
 
     #[tokio::test]
     async fn should_leave_the_plan_alone_without_hooks() -> Result<()> {
-        assert_eq!(submit(&[]).await?, "EmptyRelation: rows=1");
+        assert_eq!(run_hooks(vec![]).await?, "EmptyRelation: rows=1");
         Ok(())
     }
 
     #[tokio::test]
     async fn should_run_hooks_in_the_order_they_were_added() -> Result<()> {
+        let hooks: Vec<Arc<dyn LogicalPlanHook>> =
+            vec![Arc::new(Limit(2)), Arc::new(Limit(1))];
         assert_eq!(
-            submit(&[2, 1]).await?,
+            run_hooks(hooks).await?,
             "Limit: skip=0, fetch=1\n  \
              Limit: skip=0, fetch=2\n    \
              EmptyRelation: rows=1"
@@ -152,9 +156,11 @@ mod tests {
 
     #[tokio::test]
     async fn should_fail_with_a_hooks_error() {
+        let hooks: Vec<Arc<dyn LogicalPlanHook>> =
+            vec![Arc::new(Limit(2)), Arc::new(AlwaysFail), Arc::new(Limit(1))];
         assert_eq!(
-            submit(&[2, 0, 1]).await.unwrap_err().to_string(),
-            "Execution error: no rows allowed"
+            run_hooks(hooks).await.unwrap_err().to_string(),
+            "Execution error: rejected by AlwaysFail"
         );
     }
 }
