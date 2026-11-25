@@ -32,8 +32,7 @@ mod iceberg_nodes {
     use datafusion::common::{Result, TableReference};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::SessionStateBuilder;
-    use datafusion::physical_plan::Partitioning;
-    use datafusion::physical_plan::{collect, displayable};
+    use datafusion::physical_plan::{Partitioning, collect, displayable};
     use datafusion::prelude::{SessionConfig, SessionContext, col, lit};
     use datafusion_proto::bytes::{
         logical_plan_from_bytes_with_extension_codec,
