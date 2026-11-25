@@ -105,6 +105,7 @@ class WithTableTest(unittest.TestCase):
 
 def comparison(staged, pipelined, dfd):
     ballista = {
+        "version": "55.0.0",
         "ballista_commit": "d98720804369917151052e1c280a1dae711817fb",
         "datafusion_version": "55.2.0",
         "iterations": 2,
@@ -130,8 +131,8 @@ class ComparisonResultsTest(unittest.TestCase):
             publish.comparison_results(comparison([4.0], [2.0], [3.0])),
             "\n".join(
                 [
-                    "Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations "
-                    "including the cold first one; DataFusion Distributed at "
+                    "Ballista 55.0.0 at `d9872080` (DataFusion 55.2.0), mean of 2 "
+                    "iterations including the cold first one; DataFusion Distributed at "
                     "`90350275` (DataFusion 55), mean of 3 iterations after an "
                     "untimed warm-up. Times in seconds; lower is better.",
                     "",
@@ -286,6 +287,17 @@ class WithSpeedupsTest(unittest.TestCase):
         self.assertEqual(
             publish.with_speedups(readme, chart_series([100.0], [50.0], [25.0])),
             "Is **2.0x faster than Spark** by default and **4.0x faster** piped.\n",
+        )
+
+    def test_the_wording_between_the_speedups_is_kept(self):
+        readme = (
+            "Is **9.9x faster than Spark** in staged mode and **9.9x faster** in\n"
+            "pipelined mode.\n"
+        )
+        self.assertEqual(
+            publish.with_speedups(readme, chart_series([100.0], [50.0], [25.0])),
+            "Is **2.0x faster than Spark** in staged mode and **4.0x faster** in\n"
+            "pipelined mode.\n",
         )
 
     def test_a_readme_without_the_summary_is_an_error(self):

@@ -52,7 +52,7 @@ execution modes that share one cluster:
   stages stream record batches to each other over Arrow Flight, with nothing written to disk. It suits short,
   interactive queries.
 
-On a 1 TB benchmark derived from TPC-H, Ballista is **2.2x faster than Spark** in staged mode and **3.4x faster** in
+On a 1 TB benchmark derived from TPC-H, Ballista is **2.3x faster than Spark** in staged mode and **3.6x faster** in
 pipelined mode. A session can switch modes between queries, so
 [one engine can serve both ETL and interactive queries](#execution-modes-one-engine-for-etl-and-interactive-queries).
 

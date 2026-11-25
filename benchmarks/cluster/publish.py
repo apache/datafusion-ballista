@@ -79,8 +79,10 @@ BEGIN = "<!-- BEGIN GENERATED BENCHMARK RESULTS -->"
 END = "<!-- END GENERATED BENCHMARK RESULTS -->"
 FINDINGS_BEGIN = "<!-- BEGIN GENERATED COMPARISON FINDINGS -->"
 FINDINGS_END = "<!-- END GENERATED COMPARISON FINDINGS -->"
+# The README's summary of the speedups over Spark. Only the two numbers are
+# generated, so the wording between them can change without changing this.
 SUMMARY = re.compile(
-    r"\*\*[\d.]+x faster than Spark\*\* by default and \*\*[\d.]+x faster\*\*"
+    r"\*\*[\d.]+x faster than Spark\*\*([^*]*)\*\*[\d.]+x faster\*\*"
 )
 
 # The README compares Ballista with Spark. Each series is a result file, how the
@@ -150,7 +152,7 @@ def comparison_results(results):
     if staged["ballista_commit"] != pipelined["ballista_commit"]:
         sys.exit("the staged and pipelined results come from different commits")
     provenance = (
-        f"Ballista at {commit(staged['ballista_commit'])} "
+        f"Ballista {staged['version']} at {commit(staged['ballista_commit'])} "
         f"(DataFusion {staged['datafusion_version']}), {protocol(staged)}; "
         f"DataFusion Distributed at {commit(dfd['datafusion_distributed_commit'])} "
         f"(DataFusion {dfd['datafusion_version']}), {protocol(dfd)}. "
@@ -236,8 +238,8 @@ def speedup(series, s):
 def with_speedups(readme, series):
     """The README with its summary quoting the speedups over Spark."""
     updated, count = SUMMARY.subn(
-        f"**{speedup(series, series[1])} faster than Spark** by default and "
-        f"**{speedup(series, series[2])} faster**",
+        lambda m: f"**{speedup(series, series[1])} faster than Spark**"
+        f"{m.group(1)}**{speedup(series, series[2])} faster**",
         readme,
     )
     if count != 1:
