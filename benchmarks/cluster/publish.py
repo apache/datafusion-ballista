@@ -146,15 +146,21 @@ def commit(sha):
     return f"`{sha[:8]}`"
 
 
+def build(name, run, sha):
+    """An engine's build, such as "Ballista 56.0.0 at `40a6197a`", with its version if recorded."""
+    version = f" {run['version']}" if "version" in run else ""
+    return f"{name}{version} at {commit(sha)}"
+
+
 def comparison_results(results):
     """The comparison page's results: where they came from, then the table."""
     staged, pipelined, dfd = (results[name] for name in COMPARISON_COLUMNS)
     if staged["ballista_commit"] != pipelined["ballista_commit"]:
         sys.exit("the staged and pipelined results come from different commits")
     provenance = (
-        f"Ballista {staged['version']} at {commit(staged['ballista_commit'])} "
+        f"{build('Ballista', staged, staged['ballista_commit'])} "
         f"(DataFusion {staged['datafusion_version']}), {protocol(staged)}; "
-        f"DataFusion Distributed at {commit(dfd['datafusion_distributed_commit'])} "
+        f"{build('DataFusion Distributed', dfd, dfd['datafusion_distributed_commit'])} "
         f"(DataFusion {dfd['datafusion_version']}), {protocol(dfd)}. "
         "Times in seconds; lower is better."
     )

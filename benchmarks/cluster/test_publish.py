@@ -148,6 +148,13 @@ class ComparisonResultsTest(unittest.TestCase):
             ),
         )
 
+    def test_names_each_release_when_it_is_recorded(self):
+        inputs = comparison([4.0], [2.0], [3.0])
+        inputs["datafusion-distributed"]["version"] = "6.0.0"
+        provenance = publish.comparison_results(inputs).split("\n")[0]
+        self.assertIn("Ballista 55.0.0 at `d9872080`", provenance)
+        self.assertIn("DataFusion Distributed 6.0.0 at `90350275`", provenance)
+
     def test_staged_and_pipelined_from_different_commits_is_an_error(self):
         inputs = comparison([1.0], [1.0], [1.0])
         inputs["ballista-staged"]["ballista_commit"] = "0" * 40
