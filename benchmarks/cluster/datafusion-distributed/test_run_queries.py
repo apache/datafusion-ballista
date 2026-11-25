@@ -18,11 +18,11 @@
 """Tests for run_queries.py against a fake coordinator.
 
 The fake answers the two requests of the worker binary's HTTP API, GET /info and
-GET /?sql=..., the way benchmarks/remote-worker/src/main.rs does: JSON with the row
-count, the time and the plan, or an HTTP 500 whose body is the error. It is injected
-as the client's URL opener, so no sockets are involved, but the runner's own
-request, error and recovery code all run. It is not a SQL engine: it recognises the
-statements the runner issues and answers everything else as a query.
+GET /?sql=..., the way datafusion/distributed-remote-worker/src/main.rs does: JSON
+with the row count, the time and the plan, or an HTTP 500 whose body is the error.
+It is injected as the client's URL opener, so no sockets are involved, but the
+runner's own request, error and recovery code all run. It is not a SQL engine: it
+recognises the statements the runner issues and answers everything else as a query.
 
 The tables and expected row counts are Trino's (../trino), which the runner shares.
 Run from benchmarks/cluster/datafusion-distributed:  python3 -m unittest -v test_run_queries

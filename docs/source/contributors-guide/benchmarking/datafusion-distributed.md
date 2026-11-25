@@ -31,12 +31,12 @@ differs from Ballista, see
 
 DataFusion Distributed is a library, so there is no engine to install. The
 project benchmarks itself with a small server binary, `worker`, from its own
-repository (`benchmarks/remote-worker`), and so do these scripts. Every pod
-runs it. One pod is the coordinator: it takes the SQL over HTTP, plans each
-query, sends its stages to the workers and runs the last stage itself. It is
-not in the workers' list, so it gets no tasks. The workers are found through a
-headless Kubernetes Service that the coordinator resolves every second;
-nothing registers anywhere.
+repository (`datafusion/distributed-remote-worker`), and so do these scripts.
+Every pod runs it. One pod is the coordinator: it takes the SQL over HTTP,
+plans each query, sends its stages to the workers and runs the last stage
+itself. It is not in the workers' list, so it gets no tasks. The workers are
+found through a headless Kubernetes Service that the coordinator resolves
+every second; nothing registers anywhere.
 
 ## Differences from the other engines
 
@@ -100,8 +100,8 @@ datafusion-distributed to measure:
 
 ```sh
 docker build -f benchmarks/cluster/docker/datafusion-distributed.Dockerfile \
-  --build-arg DFD_REF=main \
-  -t <registry>/datafusion-distributed-bench:main benchmarks/cluster/datafusion-distributed
+  --build-arg DFD_REF=v6.0.0 \
+  -t <registry>/datafusion-distributed-bench:v6.0.0 benchmarks/cluster/datafusion-distributed
 ```
 
 Put the image in `cluster.toml` as `images.datafusion_distributed`, then:

@@ -15,8 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 # DataFusion Distributed benchmark image: the `worker` binary from the
-# datafusion-distributed repository's benchmarks/remote-worker crate, which the
-# project benchmarks itself with. It serves SQL over HTTP on 9000 and
+# datafusion-distributed repository's datafusion/distributed-remote-worker crate,
+# which the project benchmarks itself with. It serves SQL over HTTP on 9000 and
 # distributed tasks over gRPC (Arrow Flight) on 9001. Every pod runs it; run.py
 # makes one of them the coordinator.
 #
@@ -26,11 +26,11 @@
 # memory limit a Ballista executor gets. Upstream's worker has no limit.
 #
 # Build with the directory of the patch as the context. DFD_REF is a branch, a
-# tag or a commit:
+# tag or a commit, and defaults to the release the patch was written for:
 #
 #   docker build -f benchmarks/cluster/docker/datafusion-distributed.Dockerfile \
-#     --build-arg DFD_REF=main \
-#     -t <registry>/datafusion-distributed-bench:main benchmarks/cluster/datafusion-distributed
+#     --build-arg DFD_REF=v6.0.0 \
+#     -t <registry>/datafusion-distributed-bench:v6.0.0 benchmarks/cluster/datafusion-distributed
 #
 # The binary is built for the platform of the build. Add --platform
 # linux/amd64 to build x86_64 binaries on another machine (slow under
@@ -40,7 +40,7 @@
 FROM rust:1-bookworm AS build
 
 ARG DFD_REPO=https://github.com/datafusion-contrib/datafusion-distributed.git
-ARG DFD_REF=main
+ARG DFD_REF=v6.0.0
 
 # The repository keeps its test data in Git LFS, which the build does not need.
 ENV GIT_LFS_SKIP_SMUDGE=1

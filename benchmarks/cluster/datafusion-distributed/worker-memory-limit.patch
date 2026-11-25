@@ -1,7 +1,7 @@
-diff --git a/benchmarks/remote-worker/src/main.rs b/benchmarks/remote-worker/src/main.rs
-index a50896b..de0ced3 100644
---- a/benchmarks/remote-worker/src/main.rs
-+++ b/benchmarks/remote-worker/src/main.rs
+diff --git a/datafusion/distributed-remote-worker/src/main.rs b/datafusion/distributed-remote-worker/src/main.rs
+index 0af2885..b6fe486 100644
+--- a/datafusion/distributed-remote-worker/src/main.rs
++++ b/datafusion/distributed-remote-worker/src/main.rs
 @@ -6,7 +6,8 @@ use datafusion::common::instant::Instant;
  use datafusion::common::runtime::SpawnedTask;
  use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
@@ -21,7 +21,7 @@ index a50896b..de0ced3 100644
      runtime_env.register_object_store(&s3_url, s3);
  
      let worker = Worker::from_session_builder(move |ctx: WorkerQueryContext| async move {
-@@ -356,6 +357,28 @@ fn err(s: impl Display) -> (StatusCode, String) {
+@@ -363,6 +364,28 @@ fn err(s: impl Display) -> (StatusCode, String) {
      (StatusCode::INTERNAL_SERVER_ERROR, s.to_string())
  }
  
