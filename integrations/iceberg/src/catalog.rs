@@ -31,8 +31,12 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
+use iceberg::arrow::ArrowReaderOptions;
 use iceberg::table::Table;
-use iceberg_datafusion::read::{FileScanTaskProviderBuilder, IcebergDataSource};
+use iceberg_datafusion::read::{
+    FileScanTaskProvider, FileScanTaskProviderBuilder, IcebergDataSource,
+};
 use iceberg_datafusion::{IcebergCatalogTableProvider, to_datafusion_error};
 
 /// A session's catalogs, serving each catalog-backed Iceberg table as a
@@ -188,16 +192,7 @@ impl TableProvider for PinnedTable {
         .with_filters(filters)
         .build()
         .await?;
-        let source = IcebergDataSource::builder(
-            state.config(),
-            schema,
-            self.table.file_io().clone(),
-            self.table.reader_builder(),
-            tasks,
-        )
-        .with_fetch(limit)
-        .build()?;
-        Ok(DataSourceExec::from_data_source(source))
+        scan_exec(state.config(), &self.table, schema, tasks, limit)
     }
 
     fn supports_filters_pushdown(
@@ -215,4 +210,36 @@ impl TableProvider for PinnedTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("INSERT INTO an Iceberg table isn't supported on Ballista yet")
     }
+}
+
+/// Builds the plan that reads `tasks` from `table`.
+///
+/// The reader takes its batch size and page index use from `config`, like
+/// iceberg-datafusion's default reader, but leaves the number of data files
+/// read at once to Iceberg, one per CPU. iceberg-datafusion reads one file at a
+/// time, expecting each output partition to read in parallel, but a lazy scan
+/// has one partition, so its files would be read one after another.
+pub(crate) fn scan_exec(
+    config: &SessionConfig,
+    table: &Table,
+    schema: SchemaRef,
+    tasks: Arc<dyn FileScanTaskProvider>,
+    fetch: Option<usize>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let options = ArrowReaderOptions::builder()
+        .with_batch_size(config.batch_size())
+        .with_row_selection_enabled(config.options().execution.parquet.enable_page_index)
+        .build();
+    let reader = table.reader_builder().with_options(options).build();
+    let source = IcebergDataSource::builder(
+        config,
+        schema,
+        table.file_io().clone(),
+        table.reader_builder(),
+        tasks,
+    )
+    .with_reader(reader)
+    .with_fetch(fetch)
+    .build()?;
+    Ok(DataSourceExec::from_data_source(source))
 }

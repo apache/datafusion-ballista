@@ -37,6 +37,7 @@ use iceberg_datafusion::read::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::scan_exec;
 use crate::wire::{self, TableWire};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,16 +96,7 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         .ok_or_else(|| {
             internal_datafusion_err!("building a lazy Iceberg scan waited on I/O")
         })??;
-        let source = IcebergDataSource::builder(
-            ctx.session_config(),
-            scan.schema,
-            table.file_io().clone(),
-            table.reader_builder(),
-            tasks,
-        )
-        .with_fetch(scan.fetch)
-        .build()?;
-        Ok(DataSourceExec::from_data_source(source))
+        scan_exec(ctx.session_config(), &table, scan.schema, tasks, scan.fetch)
     }
 
     fn try_encode(
