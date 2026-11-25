@@ -22,6 +22,7 @@ mod common;
 
 #[cfg(test)]
 mod iceberg_nodes {
+    use std::any::Any;
     use std::sync::Arc;
 
     use ballista_core::extension::SessionConfigExt;
@@ -43,7 +44,6 @@ mod iceberg_nodes {
     use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
     use iceberg_datafusion::read::{IcebergDataSource, LazyFileScanTaskProvider};
     use iceberg_datafusion::{IcebergDataFusionConfig, IcebergStaticTableProvider};
-    use std::any::Any;
 
     use crate::common::{catalog_table, insert, memory_catalog};
 
@@ -97,12 +97,17 @@ mod iceberg_nodes {
     async fn should_refuse_eagerly_planned_scans() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let catalog = memory_catalog(dir.path()).await;
-        let table = insert(&catalog, "(1, 'a')").await;
+        // Two files, which eager planning puts in two partitions.
+        insert(&catalog, "(1, 'a')").await;
+        let table = insert(&catalog, "(2, 'b')").await;
         let provider = IcebergStaticTableProvider::try_new_from_table(table)?;
         let mut iceberg = IcebergDataFusionConfig::default();
         iceberg.execution.eager_file_planning = true;
+        let config = SessionConfig::new()
+            .with_target_partitions(2)
+            .with_option_extension(iceberg);
         let state = SessionStateBuilder::new()
-            .with_config(SessionConfig::new().with_option_extension(iceberg))
+            .with_config(config)
             .with_default_features()
             .build();
         let ctx = SessionContext::new_with_state(register_iceberg(state));

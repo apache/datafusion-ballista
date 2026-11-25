@@ -119,15 +119,6 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         else {
             return not_impl_err!("{} isn't an Iceberg scan", node.name());
         };
-        // Ballista can't restrict this scan to a task's partitions, so the job
-        // would fail whenever its stage is split between tasks, which depends
-        // on how busy the cluster is. Refuse it every time instead.
-        let partitions = node.output_partitioning().partition_count();
-        if partitions > 1 {
-            return not_impl_err!(
-                "Iceberg scans with {partitions} partitions aren't supported on Ballista yet"
-            );
-        }
         // Executors discover the scan's files themselves, from the table.
         let tasks = source.file_scan_task_provider() as &dyn Any;
         let Some(tasks) = tasks.downcast_ref::<LazyFileScanTaskProvider>() else {
@@ -136,6 +127,16 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                  iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
             );
         };
+        // Ballista can't restrict this scan to a task's partitions, so the job
+        // would fail whenever its stage is split between tasks, which depends
+        // on how busy the cluster is. Refuse it every time instead. A lazy scan
+        // has one partition today.
+        let partitions = node.output_partitioning().partition_count();
+        if partitions > 1 {
+            return not_impl_err!(
+                "Iceberg scans with {partitions} partitions aren't supported on Ballista yet"
+            );
+        }
         wire::encode(
             buf,
             &ScanWire {

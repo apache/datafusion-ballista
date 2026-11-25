@@ -149,9 +149,9 @@ impl SchemaProvider for PinningSchema {
 /// One version of an Iceberg table, read with the schema the client planned
 /// against.
 ///
-/// Not an [`IcebergStaticTableProvider`]: that derives its schema from the
-/// table, which may have evolved since planning, and is built asynchronously,
-/// which a codec's decode can't await.
+/// Not an [`IcebergStaticTableProvider`]: that takes its schema from the
+/// snapshot, which can differ from the table's current schema that the client
+/// planned against.
 ///
 /// [`IcebergStaticTableProvider`]: iceberg_datafusion::IcebergStaticTableProvider
 #[derive(Debug)]
