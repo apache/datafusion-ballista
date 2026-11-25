@@ -393,12 +393,11 @@ pub fn execute_query_params<T: 'static + AsLogicalPlan>(
     session_id: String,
 ) -> Result<ExecuteQueryParams> {
     let mut buf: Vec<u8> = vec![];
-    let plan_message = T::try_from_logical_plan(plan, extension_codec).map_err(|e| {
-        DataFusionError::Internal(format!("failed to serialize logical plan: {e:?}"))
-    })?;
-    plan_message.try_encode(&mut buf).map_err(|e| {
-        DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
-    })?;
+    let plan_message = T::try_from_logical_plan(plan, extension_codec)
+        .map_err(|e| e.context("failed to serialize logical plan"))?;
+    plan_message
+        .try_encode(&mut buf)
+        .map_err(|e| e.context("failed to encode logical plan"))?;
 
     let settings = session_config
         .options()
@@ -438,14 +437,12 @@ pub async fn execute_physical_plan<U: 'static + AsExecutionPlan>(
     session_id: String,
     session_config: SessionConfig,
 ) -> Result<SendableRecordBatchStream> {
-    let plan_message =
-        U::try_from_physical_plan(physical_plan.clone(), codec).map_err(|e| {
-            DataFusionError::Internal(format!("failed to serialize physical plan: {e:?}"))
-        })?;
+    let plan_message = U::try_from_physical_plan(physical_plan.clone(), codec)
+        .map_err(|e| e.context("failed to serialize physical plan"))?;
     let mut buf: Vec<u8> = vec![];
-    plan_message.try_encode(&mut buf).map_err(|e| {
-        DataFusionError::Execution(format!("failed to encode physical plan: {e:?}"))
-    })?;
+    plan_message
+        .try_encode(&mut buf)
+        .map_err(|e| e.context("failed to encode physical plan"))?;
 
     let settings = session_config
         .options()
@@ -1388,10 +1385,11 @@ async fn fetch_partition(
 #[cfg(test)]
 mod test {
     use crate::config::BallistaConfig;
+    use crate::execution_plans::UnresolvedShuffleExec;
     use crate::execution_plans::distributed_query::{
         DistributedQueryExec, PipelinedResults, check_scheduler_version,
-        execute_query_pull, execute_query_push, get_client_host_port,
-        job_submission_request,
+        execute_physical_plan, execute_query_params, execute_query_pull,
+        execute_query_push, get_client_host_port, job_submission_request,
     };
     use crate::execution_plans::test_util::int32_batch;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
@@ -1410,13 +1408,19 @@ mod test {
     };
     use crate::utils::GrpcClientConfig;
     use crate::{BALLISTA_VERSION, JobId};
-    use datafusion::logical_expr::LogicalPlan;
+    use datafusion::catalog::MemTable;
+    use datafusion::datasource::provider_as_source;
+    use datafusion::error::DataFusionError;
+    use datafusion::logical_expr::{LogicalPlan, LogicalPlanBuilder};
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::displayable;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::{ChildrenPropertiesMode, ReplaceChildrenOptions};
     use datafusion::prelude::SessionConfig;
-    use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::logical_plan::DefaultLogicalExtensionCodec;
+    use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
+    use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
     use futures::stream::BoxStream;
     use futures::{Stream, StreamExt, TryStreamExt};
     use parking_lot::Mutex;
@@ -1955,6 +1959,70 @@ mod test {
             .unwrap_err();
         assert!(
             err.to_string().contains("has not been executed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn logical_plan_serialization_error_keeps_its_cause() {
+        let batch = int32_batch(&[1]);
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+        let plan =
+            LogicalPlanBuilder::scan("t", provider_as_source(Arc::new(table)), None)
+                .unwrap()
+                .build()
+                .unwrap();
+
+        let err = execute_query_params::<LogicalPlanNode>(
+            &plan,
+            &DefaultLogicalExtensionCodec {},
+            &SessionConfig::new(),
+            "session".to_string(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err.find_root(), DataFusionError::NotImplemented(_)),
+            "cause lost: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("failed to serialize logical plan"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn physical_plan_serialization_error_keeps_its_cause() {
+        let schema = int32_batch(&[1]).schema();
+        let plan = Arc::new(UnresolvedShuffleExec::new(
+            1,
+            schema,
+            Partitioning::UnknownPartitioning(1),
+        ));
+
+        let err = execute_physical_plan::<PhysicalPlanNode>(
+            "http://scheduler:50050".to_string(),
+            &BallistaConfig::default(),
+            plan,
+            &DefaultPhysicalExtensionCodec {},
+            "session".to_string(),
+            SessionConfig::new(),
+        )
+        .await
+        .err()
+        .unwrap();
+
+        assert!(
+            matches!(
+                err.find_root(),
+                DataFusionError::Internal(msg) if !msg.starts_with("failed to serialize")
+            ),
+            "cause lost: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("failed to serialize physical plan"),
             "unexpected error: {err}"
         );
     }

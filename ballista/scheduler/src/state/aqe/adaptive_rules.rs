@@ -52,6 +52,12 @@ pub trait AdaptiveRules: Debug + Send + Sync {
     /// hasn't started by marking its exchange inactive, and release it on a
     /// later replan. A rule must leave the stage boundaries valid: no other
     /// rule runs after it to place an exchange that a change needs.
+    ///
+    /// In particular, a rule must not put a node that keeps its own partition
+    /// count, such as a `SortExec` that merges its input, into a `UnionExec`
+    /// branch without an exchange above it. When the union's stage is split
+    /// between tasks, the scheduler can't restrict that branch and fails the
+    /// task.
     fn replan_rules(&self, _plan_ids: Arc<AtomicUsize>) -> Vec<AdaptiveRule> {
         vec![]
     }

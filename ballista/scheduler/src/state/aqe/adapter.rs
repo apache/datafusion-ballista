@@ -291,6 +291,20 @@ impl BallistaAdapter {
         }
     }
 
+    /// `plan` as its stage's tasks would see it: each `ExchangeExec`, which
+    /// must already be resolved, replaced by the reader the stage would get.
+    ///
+    /// Only the readers are built. Unlike [`Self::adapt_to_ballista`], this
+    /// doesn't resolve `RangeFilterExec` bounds or attach reader bounds, so
+    /// the result is fit for checking partition counts but isn't the exact
+    /// plan the tasks run.
+    pub(crate) fn with_readers(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let mut adapter = BallistaAdapter::default();
+        Ok(plan.transform_down(|e| adapter.transform_children(e))?.data)
+    }
+
     /// Converts Adaptive plan to plan which ballista expects
     /// This is to be used to convert [ExchangeExec] to
     /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
