@@ -672,7 +672,9 @@ re-derive them from operator requirements), and runs the same optimizer rules. T
 and Ballista operators by type and leave any other operator in place. An extension operator must declare
 what it needs from its input through <code class="docutils literal notranslate"><span class="pre">required_input_distribution</span></code>, as DataFusion re-derives
 <code class="docutils literal notranslate"><span class="pre">CoalescePartitionsExec</span></code> from that, and partition coalescing is skipped for a stage whose shuffles feed an
-operator the rule does not know.</p>
+operator the rule does not know. A scheduler embedder can declare its own operators tolerant of a coalesced
+partition count with <code class="docutils literal notranslate"><span class="pre">AdaptiveRules::tolerates_partition_count_change</span></code>, and rebuild one that keeps
+per-partition state beside its inputs with <code class="docutils literal notranslate"><span class="pre">AdaptiveRules::with_coalesced_children</span></code>.</p>
 </section>
 <section id="how-re-optimization-works">
 <h3>How re-optimization works<a class="headerlink" href="#how-re-optimization-works" title="Link to this heading">#</a></h3>
