@@ -49,6 +49,7 @@
 //!
 //! [`AdaptivePlanner`]: crate::state::aqe::planner::AdaptivePlanner
 
+use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 use ballista_core::execution_plans::{
@@ -70,7 +71,6 @@ use datafusion_proto::bytes::physical_plan_to_bytes_with_extension_codec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalProtoConverterExtension;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use log::debug;
 use prost::Message;
 
 use crate::state::aqe::execution_plan::ExchangeExec;
@@ -78,20 +78,47 @@ use crate::state::aqe::execution_plan::ExchangeExec;
 /// What a stage is matched on: a digest of its encoding. See the module docs.
 pub(crate) type ReuseKey = [u8; 32];
 
+/// Why the stage of an exchange may not be shared. See the module docs.
+#[derive(Debug)]
+pub(crate) enum Unshareable {
+    /// The exchange range-partitions its output.
+    RangePartitioned,
+    /// The named operator of the stage has a volatile expression.
+    Volatile(String),
+    /// The named operator of the stage needs the stage to have one consumer.
+    SingleConsumer(String),
+    /// The stage could not be keyed, such as when the codec can't encode it.
+    NoKey(DataFusionError),
+}
+
+impl Display for Unshareable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RangePartitioned => write!(f, "it range-partitions its output"),
+            Self::Volatile(name) => write!(f, "{name} has a volatile expression"),
+            Self::SingleConsumer(name) => {
+                write!(f, "{name} needs its stage to have one consumer")
+            }
+            Self::NoKey(e) => write!(f, "its stage could not be keyed: {e}"),
+        }
+    }
+}
+
 /// The key `node`, an exchange about to launch its stage, is matched on, or
-/// `None` when its stage may not be shared. See the module docs.
+/// why its stage may not be shared. `exchange` is `node` downcast. See the
+/// module docs.
 pub(crate) fn reuse_key(
     node: &Arc<dyn ExecutionPlan>,
+    exchange: &ExchangeExec,
     codec: &Arc<dyn PhysicalExtensionCodec>,
-) -> Option<ReuseKey> {
-    let exchange = node.downcast_ref::<ExchangeExec>()?;
+) -> std::result::Result<ReuseKey, Unshareable> {
     if matches!(exchange.partitioning(), Some(Partitioning::Range(_))) {
-        return None;
+        return Err(Unshareable::RangePartitioned);
     }
     // One walk over the stage rules out what may not be shared, and swaps
     // each exchange it reads for one over an empty input, so the stages below
     // are encoded by their stage ids alone instead of being encoded again.
-    let mut mergeable = true;
+    let mut unshareable = None;
     let input = Arc::clone(exchange.input())
         .transform_down(|node| {
             if let Some(read) = node.downcast_ref::<ExchangeExec>() {
@@ -100,20 +127,22 @@ pub(crate) fn reuse_key(
                 let leaf = replace_children_if_necessary(Arc::clone(&node), vec![empty])?;
                 return Ok(Transformed::new(leaf, true, TreeNodeRecursion::Jump));
             }
-            if requires_single_consumer(node.as_ref())
-                || has_volatile_expr(node.as_ref())?
-            {
-                mergeable = false;
-                return Ok(Transformed::new(node, false, TreeNodeRecursion::Stop));
+            if requires_single_consumer(node.as_ref()) {
+                unshareable = Some(Unshareable::SingleConsumer(node.name().to_owned()));
+            } else if has_volatile_expr(node.as_ref())? {
+                unshareable = Some(Unshareable::Volatile(node.name().to_owned()));
+            } else {
+                return Ok(Transformed::no(node));
             }
-            Ok(Transformed::no(node))
+            Ok(Transformed::new(node, false, TreeNodeRecursion::Stop))
         })
-        .ok()?
+        .map_err(Unshareable::NoKey)?
         .data;
-    if !mergeable {
-        return None;
+    if let Some(unshareable) = unshareable {
+        return Err(unshareable);
     }
-    let node = replace_children_if_necessary(Arc::clone(node), vec![input]).ok()?;
+    let node = replace_children_if_necessary(Arc::clone(node), vec![input])
+        .map_err(Unshareable::NoKey)?;
     let codec = KeyCodec {
         inner: Arc::clone(codec),
     };
@@ -121,14 +150,8 @@ pub(crate) fn reuse_key(
     // a key is kept for every stage of the job, so only a 256-bit digest of
     // it is kept.
     let bytes = physical_plan_to_bytes_with_extension_codec(node, &codec)
-        .inspect_err(|e| {
-            debug!(
-                "exchange reuse: stage of exchange {} is not shared, its plan cannot be encoded: {e}",
-                exchange.plan_id()
-            )
-        })
-        .ok()?;
-    Some(*blake3::hash(&bytes).as_bytes())
+        .map_err(Unshareable::NoKey)?;
+    Ok(*blake3::hash(&bytes).as_bytes())
 }
 
 /// Whether `node` has a volatile expression such as `random()`.

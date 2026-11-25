@@ -72,6 +72,7 @@ pub mod adaptive_rules;
 pub(crate) mod coalesce;
 pub(crate) mod execution_plan;
 pub mod optimizer_rule;
+pub(crate) mod plan_change_log;
 pub mod planner;
 pub(crate) mod reuse_exchange;
 mod runtime_filter;

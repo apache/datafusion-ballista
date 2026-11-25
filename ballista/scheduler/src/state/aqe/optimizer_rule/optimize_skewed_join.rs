@@ -69,19 +69,17 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
             return Ok(plan);
         }
 
-        let input = if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
-            // A passthrough boundary still advertises its original partition
-            // count to the next stage. Only rewrite an intermediate stage when
-            // its writer repartitions the shards back to that declared width.
-            if exchange.partitioning.is_none() {
+        // A passthrough boundary still advertises its original partition
+        // count to the next stage. Only rewrite an intermediate stage when
+        // its writer repartitions the shards back to that declared width.
+        let (input, passthrough) =
+            if let Some(exchange) = plan.downcast_ref::<ExchangeExec>() {
+                (exchange.input(), exchange.partitioning.is_none())
+            } else if let Some(adaptive) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
+                (adaptive.input(), false)
+            } else {
                 return Ok(plan);
-            }
-            exchange.input()
-        } else if let Some(adaptive) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
-            adaptive.input()
-        } else {
-            return Ok(plan);
-        };
+            };
         // Stop at the first non-passthrough operator, including an exchange:
         // its input belongs to another stage and must not be rewritten here.
         let mut join = skip_passthrough(input);
@@ -97,6 +95,13 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
         let Some(join_type) = join_type_of(join) else {
             return Ok(plan);
         };
+        if passthrough {
+            debug!(
+                "skew join skipped: the stage of the {join_type} join passes its partitions \
+                 through to the next stage"
+            );
+            return Ok(plan);
+        }
         let (split_left, split_right) = match join_type {
             JoinType::Inner => (true, true),
             JoinType::Left
@@ -104,28 +109,28 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
             | JoinType::LeftAnti
             | JoinType::LeftMark => (true, false),
             JoinType::Right => (false, true),
-            _ => return Ok(plan),
+            _ => {
+                debug!("skew join skipped: a {join_type} join can't be split");
+                return Ok(plan);
+            }
         };
         let children = join.children();
-        let Some(left) = skip_passthrough(children[0]).downcast_ref::<ExchangeExec>()
-        else {
+        let (Some(left), Some(right)) = (
+            skip_passthrough(children[0]).downcast_ref::<ExchangeExec>(),
+            skip_passthrough(children[1]).downcast_ref::<ExchangeExec>(),
+        ) else {
+            debug!(
+                "skew join skipped: an input of the {join_type} join is not read from a shuffle"
+            );
             return Ok(plan);
         };
-        let Some(right) = skip_passthrough(children[1]).downcast_ref::<ExchangeExec>()
-        else {
-            return Ok(plan);
-        };
-        if [left, right].iter().any(|exchange| {
-            exchange.coalesce().is_some()
-                || exchange.skew_join().is_some()
-                || exchange.input().output_ordering().is_some()
-                || exchange.broadcast
-                || exchange.range_repartition_routing().is_some()
-                || !matches!(
-                    exchange.properties().output_partitioning(),
-                    Partitioning::Hash(_, _)
-                )
-        }) {
+        let unsplittable_input = [left, right].into_iter().find_map(|exchange| {
+            unsplittable(exchange).map(|reason| (exchange.plan_id(), reason))
+        });
+        if let Some((plan_id, reason)) = unsplittable_input {
+            debug!(
+                "skew join skipped: exchange {plan_id}, an input of the {join_type} join, {reason}"
+            );
             return Ok(plan);
         }
         let (Some(mut left_parts), Some(mut right_parts)) =
@@ -135,14 +140,33 @@ impl PhysicalOptimizerRule for OptimizeSkewedJoinRule {
         };
         let partition_count = left_parts.len();
         if right_parts.len() != partition_count {
+            debug!(
+                "skew join skipped: exchanges {} and {}, the inputs of the {join_type} join, \
+                 have {partition_count} and {} partitions",
+                left.plan_id(),
+                right.plan_id(),
+                right_parts.len()
+            );
             return Ok(plan);
         }
         sort_mapper_outputs(&mut left_parts);
         sort_mapper_outputs(&mut right_parts);
         let left_ranges = build_ranges(&left_parts, split_left, &bc);
         let right_ranges = build_ranges(&right_parts, split_right, &bc);
-        let (left_shards, right_shards) = pair_shards(&left_ranges, &right_ranges);
+        let (left_shards, right_shards) =
+            pair_shards(&left_ranges.ranges, &right_ranges.ranges);
         if left_shards.len() == partition_count {
+            debug!(
+                "skew join skipped: no partition of the {join_type} join was split \
+                 (exchange {}: largest {} bytes, skewed above {} bytes; \
+                 exchange {}: largest {} bytes, skewed above {} bytes)",
+                left.plan_id(),
+                left_ranges.largest,
+                left_ranges.threshold,
+                right.plan_id(),
+                right_ranges.largest,
+                right_ranges.threshold,
+            );
             return Ok(plan);
         }
         debug!(
@@ -184,6 +208,29 @@ fn skip_passthrough(mut plan: &Arc<dyn ExecutionPlan>) -> &Arc<dyn ExecutionPlan
     plan
 }
 
+/// Why the partitions `exchange` reads into a join can't be split, if they
+/// can't.
+fn unsplittable(exchange: &ExchangeExec) -> Option<&'static str> {
+    if exchange.coalesce().is_some() {
+        Some("is coalesced")
+    } else if exchange.skew_join().is_some() {
+        Some("is split already")
+    } else if exchange.input().output_ordering().is_some() {
+        Some("is sorted")
+    } else if exchange.broadcast {
+        Some("is broadcast")
+    } else if exchange.range_repartition_routing().is_some() {
+        Some("is range-partitioned")
+    } else if !matches!(
+        exchange.properties().output_partitioning(),
+        Partitioning::Hash(_, _)
+    ) {
+        Some("is not hash-partitioned")
+    } else {
+        None
+    }
+}
+
 fn join_type_of(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinType> {
     if plan.fetch().is_some() {
         return None;
@@ -196,11 +243,21 @@ fn join_type_of(plan: &Arc<dyn ExecutionPlan>) -> Option<JoinType> {
         .map(|join| join.join_type())
 }
 
+/// How the partitions of one join input are read.
+struct InputRanges {
+    /// The mapper ranges each partition is read in.
+    ranges: Vec<Vec<(u32, u32)>>,
+    /// The size in bytes above which a partition is skewed.
+    threshold: u64,
+    /// The size in bytes of the largest partition.
+    largest: u64,
+}
+
 fn build_ranges(
     partitions: &[Vec<PartitionLocation>],
     can_split: bool,
     config: &BallistaConfig,
-) -> Vec<Vec<(u32, u32)>> {
+) -> InputRanges {
     let sizes: Vec<u64> = partitions
         .iter()
         .map(|locations| {
@@ -217,10 +274,12 @@ fn build_ranges(
     );
     let advisory_bytes = config.skew_join_advisory_partition_bytes() as u64;
     let small_factor = config.skew_join_small_partition_factor();
-    partitions
+    let mut largest = 0;
+    let ranges = partitions
         .iter()
         .zip(sizes)
         .map(|(locations, bytes)| {
+            largest = largest.max(bytes);
             if can_split && bytes > threshold {
                 let mapper_bytes: Vec<_> = locations
                     .iter()
@@ -231,5 +290,10 @@ fn build_ranges(
                 vec![(0, locations.len() as u32)]
             }
         })
-        .collect()
+        .collect();
+    InputRanges {
+        ranges,
+        threshold,
+        largest,
+    }
 }
