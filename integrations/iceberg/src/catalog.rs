@@ -238,6 +238,7 @@ pub(crate) fn scan_exec(
         table.reader_builder(),
         tasks,
     )
+    // `builder` applies its own reader options, reading one file at a time.
     .with_reader(reader)
     .with_fetch(fetch)
     .build()?;

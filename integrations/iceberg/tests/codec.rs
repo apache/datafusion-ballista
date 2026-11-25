@@ -32,6 +32,7 @@ mod iceberg_nodes {
     use datafusion::common::{Result, TableReference};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::physical_plan::{collect, displayable};
     use datafusion::prelude::{SessionConfig, SessionContext, col, lit};
     use datafusion_proto::bytes::{
@@ -41,8 +42,12 @@ mod iceberg_nodes {
     use datafusion_proto::logical_plan::LogicalExtensionCodec;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
     use iceberg::inspect::MetadataTableType;
+    use iceberg::scan::FileScanTaskStream;
     use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
-    use iceberg_datafusion::read::{IcebergDataSource, LazyFileScanTaskProvider};
+    use iceberg_datafusion::read::{
+        FileScanTaskProvider, FileScanTaskProviderContext, IcebergDataSource,
+        LazyFileScanTaskProvider,
+    };
     use iceberg_datafusion::{IcebergDataFusionConfig, IcebergStaticTableProvider};
 
     use crate::common::{catalog_table, insert, memory_catalog};
@@ -122,6 +127,57 @@ mod iceberg_nodes {
             error.to_string(),
             "This feature is not implemented: Iceberg scans planned eagerly, with \
              iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
+        );
+
+        Ok(())
+    }
+
+    /// A task provider ballista-iceberg doesn't know, which supplies no files.
+    #[derive(Debug)]
+    struct NoFiles;
+
+    impl FileScanTaskProvider for NoFiles {
+        fn partitioning(&self) -> Partitioning {
+            Partitioning::UnknownPartitioning(1)
+        }
+
+        fn open(
+            self: Arc<Self>,
+            _partition: usize,
+            _context: FileScanTaskProviderContext<'_>,
+        ) -> Result<FileScanTaskStream> {
+            Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn should_refuse_scans_from_other_task_providers() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let catalog = memory_catalog(dir.path()).await;
+        let table = insert(&catalog, "(1, 'a')").await;
+        let schema =
+            IcebergStaticTableProvider::try_new_from_table(table.clone())?.schema();
+        let state = SessionStateBuilder::new().with_default_features().build();
+        let ctx = SessionContext::new_with_state(register_iceberg(state));
+        let source = IcebergDataSource::builder(
+            ctx.state().config(),
+            schema,
+            table.file_io().clone(),
+            table.reader_builder(),
+            Arc::new(NoFiles),
+        )
+        .build()?;
+        let scan = DataSourceExec::from_data_source(source);
+
+        let codec = ctx.state().config().ballista_physical_extension_codec();
+        let error = codec
+            .try_encode(scan, &mut Vec::new(), &DefaultPhysicalProtoConverter {})
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "This feature is not implemented: Iceberg scans with a custom file scan \
+             task provider aren't supported on Ballista yet"
         );
 
         Ok(())

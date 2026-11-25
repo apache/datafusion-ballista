@@ -43,10 +43,9 @@ ignored = ["arrow-schema"]
 [dependencies]
 arrow-schema = { version = "60.2.0", features = ["serde"] }
 async-trait = "0.1"
-# A commit on main with ComposedLogicalExtensionCodec (#2752) and the
-# partition-sliceable resolver (#2721), not the crates in this repo, so a
-# change to Ballista doesn't break this build. Move to crates.io once a
-# release includes both.
+# A commit on main, not the crates in this repo, so a change to Ballista
+# doesn't break this build. 56.0.0-rc1 includes this commit, so move to
+# crates.io once 56.0.0 is published.
 ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0" }
 ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0", default-features = false, optional = true }
 ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0", default-features = false, optional = true }

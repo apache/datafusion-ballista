@@ -26,14 +26,17 @@ use datafusion::common::{Result, internal_datafusion_err, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::{
     ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
     PhysicalProtoConverterExtension,
 };
 use futures::FutureExt;
 use iceberg::expr::Predicate;
+use iceberg_datafusion::IcebergDataFusionConfig;
 use iceberg_datafusion::read::{
-    FileScanTaskProviderBuilder, IcebergDataSource, LazyFileScanTaskProvider,
+    EagerFileScanTaskProvider, FileScanTaskProviderBuilder, IcebergDataSource,
+    LazyFileScanTaskProvider,
 };
 use serde::{Deserialize, Serialize};
 
@@ -82,10 +85,13 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let scan: ScanWire = wire::decode(buf)?;
         let table = scan.table.load()?;
-        // A default context leaves eager file planning off, so the provider
-        // discovers files when the scan runs, and building it awaits nothing.
+        // With eager file planning off, the provider discovers files when the
+        // scan runs, so building it awaits nothing.
+        let mut iceberg = IcebergDataFusionConfig::default();
+        iceberg.execution.eager_file_planning = false;
+        let config = SessionConfig::new().with_option_extension(iceberg);
         let tasks = FileScanTaskProviderBuilder::new(
-            Arc::new(TaskContext::default()),
+            Arc::new(TaskContext::default().with_session_config(config)),
             table.clone(),
             Arc::clone(&scan.schema),
         )
@@ -114,9 +120,15 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         // Executors discover the scan's files themselves, from the table.
         let tasks = source.file_scan_task_provider() as &dyn Any;
         let Some(tasks) = tasks.downcast_ref::<LazyFileScanTaskProvider>() else {
+            if tasks.is::<EagerFileScanTaskProvider>() {
+                return not_impl_err!(
+                    "Iceberg scans planned eagerly, with \
+                     iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
+                );
+            }
             return not_impl_err!(
-                "Iceberg scans planned eagerly, with \
-                 iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
+                "Iceberg scans with a custom file scan task provider aren't supported \
+                 on Ballista yet"
             );
         };
         // Ballista can't restrict this scan to a task's partitions, so the job
