@@ -34,7 +34,7 @@ async fn two_stage_planner(
     AdaptivePlanner::from_logical_sql(
         &ctx,
         "select c, count(*) from (select a, c from t group by a, c) group by c",
-        Some(embedder),
+        Some(Arc::new(embedder.clone())),
     )
     .await
 }

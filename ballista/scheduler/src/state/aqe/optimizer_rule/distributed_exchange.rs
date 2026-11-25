@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::physical_optimizer::join_selection::collect_left_broadcast_safe;
+use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
+use crate::state::task_builder::branch_splits;
 use ballista_core::config::BallistaConfig;
 use ballista_core::execution_plans::{
     OrderedRangeRepartitionExec, PartitionIdRepartitionExec, RangeFilterExec,
@@ -27,11 +30,12 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::joins::{HashJoinExec, NestedLoopJoinExec, PartitionMode};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions, execution_plan,
 };
@@ -69,23 +73,22 @@ impl DistributedExchangeRule {
         }
 
         // DataFusion's null-aware hash join coordinates visited rows and
-        // probe-side NULL state with in-process atomics. A CollectLeft join
-        // running once per probe partition therefore produces duplicate or
-        // incorrect output. This is the final plan-mutating rule, so enforce an
-        // explicit probe-side coalesce here after DataFusion's optimizers have
-        // finished. Add an exchange when the subtree has no existing boundary.
-        if let Some(hash_join) = execution_plan.downcast_ref::<HashJoinExec>()
-            && hash_join.null_aware
-            && *hash_join.partition_mode() == PartitionMode::CollectLeft
-            && hash_join
-                .right()
-                .downcast_ref::<CoalescePartitionsExec>()
-                .is_none()
+        // probe-side NULL state with in-process atomics, and a nested-loop join
+        // tracks matched build rows the same way. Such a join running once per
+        // probe partition therefore produces duplicate or incorrect output.
+        // This is the final plan-mutating rule, so enforce an explicit
+        // probe-side coalesce here after DataFusion's optimizers have finished.
+        // Add an exchange when the subtree has no existing boundary, unless it
+        // is a scan small enough to read inline.
+        if probe_needs_one_task(&execution_plan)
+            && let [left, right] = execution_plan.children().as_slice()
+            && right.downcast_ref::<CoalescePartitionsExec>().is_none()
         {
-            let left = hash_join.left().clone();
-            let right = hash_join.right().clone();
-            let right = if right.downcast_ref::<ExchangeExec>().is_none()
+            let left = Arc::clone(left);
+            let right = Arc::clone(right);
+            let right = if !is_stage_boundary(&right)
                 && !matches!(nearest_exchange_status(&right), ExchangeStatus::Unresolved)
+                && !is_inlinable_scan_pipeline(&right, broadcast_threshold_bytes(config))?
             {
                 Arc::new(ExchangeExec::new(
                     right,
@@ -105,7 +108,7 @@ impl DistributedExchangeRule {
 
         if let Some(coalesce) = execution_plan.downcast_ref::<CoalescePartitionsExec>() {
             let input = coalesce.input();
-            if input.downcast_ref::<ExchangeExec>().is_none()
+            if !is_stage_boundary(input)
                 && !matches!(nearest_exchange_status(input), ExchangeStatus::Unresolved)
                 && !is_inlinable_scan_pipeline(input, broadcast_threshold_bytes(config))?
             {
@@ -183,10 +186,64 @@ impl DistributedExchangeRule {
                             execution_plan.name()
                         );
                     }
+                    if execution_plan.is::<UnionExec>() {
+                        return self.stage_unsplittable_branches(execution_plan);
+                    }
                 }
             }
         }
         Ok(Transformed::no(execution_plan))
+    }
+
+    /// Give each branch of `union` that a task can't run its share of a stage
+    /// of its own, as the static planner does (`can_stay_inline`).
+    ///
+    /// A task running some of the union's partitions restricts every other
+    /// branch to none. A branch that keeps a partition anyway, such as one
+    /// that merges its input through a `SortExec` or a global aggregate, would
+    /// run whole in every task, and restriction refuses such a task. Behind
+    /// an exchange the branch is a shuffle reader, which restricts cleanly, and
+    /// the merge runs once.
+    ///
+    /// A branch is judged as the stage's tasks would run it, its exchanges
+    /// replaced by readers, so one over an exchange that hasn't run is left
+    /// for a later pass: the union's stage can't start before then.
+    fn stage_unsplittable_branches(
+        &self,
+        union: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        let mut branches: Vec<_> = union.children().into_iter().cloned().collect();
+        let mut staged = false;
+        for branch in &mut branches {
+            if matches!(nearest_exchange_status(branch), ExchangeStatus::Unresolved)
+                || branch_splits(&BallistaAdapter::with_readers(Arc::clone(branch))?)
+            {
+                continue;
+            }
+            let id = self
+                .plan_id_generator
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *branch = Arc::new(ExchangeExec::new(Arc::clone(branch), None, id));
+            staged = true;
+        }
+        if !staged {
+            return Ok(Transformed::no(union));
+        }
+        Ok(Transformed::yes(union.replace_children(
+            branches,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )?))
+    }
+}
+
+/// Whether `plan` is a join that must see every probe partition in one task.
+fn probe_needs_one_task(plan: &Arc<dyn ExecutionPlan>) -> bool {
+    if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
+        hash_join.null_aware && *hash_join.partition_mode() == PartitionMode::CollectLeft
+    } else if let Some(join) = plan.downcast_ref::<NestedLoopJoinExec>() {
+        !collect_left_broadcast_safe(*join.join_type())
+    } else {
+        false
     }
 }
 
@@ -348,7 +405,9 @@ impl PhysicalOptimizerRule for DistributedExchangeRule {
 /// True when `node` is (or transparently sits on) a stage boundary.
 /// `RangeFilterExec` counts because we chose not to fold range-filtering
 /// into `ShuffleReader`/`ExchangeExec` — the operator is part of the
-/// boundary shape by design.
+/// boundary shape by design. So does a `UnionExec` of boundaries, such as one
+/// whose branches each got a stage of their own: a stage of it alone would
+/// only copy its readers' rows into another shuffle.
 fn is_stage_boundary(node: &Arc<dyn ExecutionPlan>) -> bool {
     if node.is::<ExchangeExec>() {
         return true;
@@ -358,7 +417,7 @@ fn is_stage_boundary(node: &Arc<dyn ExecutionPlan>) -> bool {
     {
         return child.is::<ExchangeExec>();
     }
-    false
+    node.is::<UnionExec>() && node.children().into_iter().all(is_stage_boundary)
 }
 
 /// Scans the subtree for the nearest `ExchangeExec` in each path and returns the
@@ -397,6 +456,7 @@ mod tests {
     use super::*;
     use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
     use crate::state::aqe::test::unknown_statistics_exec;
+    use crate::test_utils::sorted_into_one_partition;
     use ballista_core::assert_plan;
     use ballista_core::execution_plans::{
         RuntimeStatsExec, UnorderedRangeRepartitionExec,
@@ -443,6 +503,28 @@ mod tests {
         Arc::new(exchange)
     }
 
+    /// An exchange over `input` whose stage, `stage_id`, has run.
+    fn exchange_that_ran(
+        input: Arc<dyn ExecutionPlan>,
+        plan_id: usize,
+        stage_id: usize,
+    ) -> Arc<dyn ExecutionPlan> {
+        let exchange = ExchangeExec::new(input, None, plan_id);
+        exchange.set_stage_id(stage_id);
+        exchange.resolve_shuffle_partitions(vec![vec![]]);
+        Arc::new(exchange)
+    }
+
+    /// A union of two sorted branches whose stages have run, as
+    /// `DistributedExchangeRule` leaves it once their stages finish.
+    fn union_of_branches_that_ran() -> Arc<dyn ExecutionPlan> {
+        UnionExec::try_new(vec![
+            exchange_that_ran(sorted_into_one_partition(scan_exec()), 10, 1),
+            exchange_that_ran(sorted_into_one_partition(scan_exec()), 11, 2),
+        ])
+        .unwrap()
+    }
+
     fn sort_preserving_merge(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         let sort_expr = PhysicalSortExpr::new_default(Arc::new(Column::new("a", 0)));
         let ordering = LexOrdering::new(vec![sort_expr]).unwrap();
@@ -485,6 +567,67 @@ mod tests {
               ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
                 StatisticsExec: col_count=1, row_count=Absent
         ");
+    }
+
+    #[test]
+    fn nested_loop_join_coalesces_probe_only_when_it_emits_build_rows() {
+        use datafusion::common::JoinType;
+
+        let join = |join_type, probe| {
+            let join =
+                NestedLoopJoinExec::try_new(leaf_exec(), probe, None, &join_type, None)
+                    .unwrap();
+            DistributedExchangeRule::default()
+                .optimize(
+                    Arc::new(join),
+                    &config_with_broadcast_threshold(64 * 1024 * 1024),
+                )
+                .unwrap()
+        };
+
+        assert_plan!(join(JoinType::LeftAnti, leaf_exec()).as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=1, stage_id=pending, stage_resolved=false
+          NestedLoopJoinExec: join_type=LeftAnti
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              ExchangeExec: partitioning=None, plan_id=0, stage_id=pending, stage_resolved=false
+                StatisticsExec: col_count=1, row_count=Absent
+        ");
+        assert_plan!(join(JoinType::LeftAnti, scan_exec()).as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
+          NestedLoopJoinExec: join_type=LeftAnti
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+
+        let emits_build_rows = [
+            JoinType::Left,
+            JoinType::Full,
+            JoinType::LeftSemi,
+            JoinType::LeftAnti,
+            JoinType::LeftMark,
+        ];
+        for join_type in [
+            JoinType::Inner,
+            JoinType::Left,
+            JoinType::Right,
+            JoinType::Full,
+            JoinType::LeftSemi,
+            JoinType::RightSemi,
+            JoinType::LeftAnti,
+            JoinType::RightAnti,
+            JoinType::LeftMark,
+            JoinType::RightMark,
+        ] {
+            let plan = join(join_type, leaf_exec());
+            let probe = plan.children()[0].children()[1];
+            assert_eq!(
+                probe.is::<CoalescePartitionsExec>(),
+                emits_build_rows.contains(&join_type),
+                "{join_type:?}"
+            );
+        }
     }
 
     // --- CoalescePartitionsExec ---
@@ -907,6 +1050,107 @@ mod tests {
             adaptive.input().downcast_ref::<RepartitionExec>().is_some(),
             "Hash repartition should be kept when input has an unresolved exchange"
         );
+    }
+
+    // --- UnionExec ---
+
+    /// A union branch that merges its input into one partition gets a stage
+    /// of its own, once any exchange under it has run. Branches a task can run
+    /// a share of, a stage's reader among them, stay in the union's stage.
+    #[test]
+    fn union_stages_a_branch_that_cannot_be_split() {
+        let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
+            scan_exec(),
+            sorted_into_one_partition(scan_exec()),
+            sorted_into_one_partition(Arc::new(ExchangeExec::new(scan_exec(), None, 10))),
+            exchange_that_ran(leaf_exec(), 11, 1),
+        ])
+        .unwrap();
+
+        let rule = DistributedExchangeRule::new(Arc::new(AtomicUsize::new(100)));
+        let result = rule.optimize(union, &config()).unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=101, stage_id=pending, stage_resolved=false
+          UnionExec
+            DataSourceExec: partitions=1, partition_sizes=[1]
+            ExchangeExec: partitioning=None, plan_id=100, stage_id=pending, stage_resolved=false
+              SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                DataSourceExec: partitions=1, partition_sizes=[1]
+            SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+              ExchangeExec: partitioning=None, plan_id=10, stage_id=pending, stage_resolved=false
+                DataSourceExec: partitions=1, partition_sizes=[1]
+            ExchangeExec: partitioning=None, plan_id=11, stage_id=1, stage_resolved=true
+              StatisticsExec: col_count=1, row_count=Absent
+        ");
+    }
+
+    /// A coalesce over a union whose branches each have a stage of their own
+    /// reads their readers in its own stage, with no stage between that would
+    /// only copy their rows.
+    #[test]
+    fn coalesce_reads_a_union_of_staged_branches_directly() {
+        let coalesce =
+            Arc::new(CoalescePartitionsExec::new(union_of_branches_that_ran()));
+
+        let result = DistributedExchangeRule::default()
+            .optimize(coalesce, &config())
+            .unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
+          CoalescePartitionsExec
+            UnionExec
+              ExchangeExec: partitioning=None, plan_id=10, stage_id=1, stage_resolved=true
+                SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+              ExchangeExec: partitioning=None, plan_id=11, stage_id=2, stage_resolved=true
+                SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                  DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
+    }
+
+    /// A null-aware join's probe side, a union whose branches each have a
+    /// stage of their own, is coalesced in the join's stage, with no stage
+    /// between that would only copy their rows.
+    #[test]
+    fn null_aware_probe_reads_a_union_of_staged_branches_directly() {
+        use datafusion::common::{JoinType, NullEquality};
+
+        let join = Arc::new(
+            HashJoinExec::try_new(
+                leaf_exec(),
+                union_of_branches_that_ran(),
+                vec![(
+                    Arc::new(Column::new("a", 0)) as _,
+                    Arc::new(Column::new("a", 0)) as _,
+                )],
+                None,
+                &JoinType::LeftAnti,
+                None,
+                PartitionMode::CollectLeft,
+                NullEquality::NullEqualsNothing,
+                true,
+            )
+            .unwrap(),
+        );
+
+        let rule = DistributedExchangeRule::default();
+        let result = rule.optimize(join, &config()).unwrap();
+
+        assert_plan!(result.as_ref(), @ r"
+        AdaptiveDatafusionExec: is_final=false, plan_id=0, stage_id=pending, stage_resolved=false
+          HashJoinExec: mode=CollectLeft, join_type=LeftAnti, on=[(a@0, a@0)], null_aware
+            StatisticsExec: col_count=1, row_count=Absent
+            CoalescePartitionsExec
+              UnionExec
+                ExchangeExec: partitioning=None, plan_id=10, stage_id=1, stage_resolved=true
+                  SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
+                ExchangeExec: partitioning=None, plan_id=11, stage_id=2, stage_resolved=true
+                  SortExec: expr=[a@0 ASC], preserve_partitioning=[false]
+                    DataSourceExec: partitions=1, partition_sizes=[1]
+        ");
     }
 
     // --- optimize() root wrapping ---

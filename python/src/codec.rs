@@ -222,9 +222,7 @@ impl PyBallistaPhysicalExtensionCodec {
         let plan = LogicalPlanNode::try_decode(&node.logical_plan)
             .and_then(|p| p.try_into_logical_plan(ctx, self.logical_codec.as_ref()))
             .map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "failed to decode DistributedQueryExec logical plan: {e:?}"
-                ))
+                e.context("failed to decode DistributedQueryExec logical plan")
             })?;
         if let Some(client) = &self.client {
             return Ok(Arc::new(PythonDistributedQueryExec::new(
@@ -309,9 +307,7 @@ impl PyBallistaPhysicalExtensionCodec {
         LogicalPlanNode::try_from_logical_plan(plan, self.logical_codec.as_ref())
             .and_then(|p| p.try_encode(&mut logical_plan))
             .map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "failed to encode DistributedQueryExec logical plan: {e:?}"
-                ))
+                e.context("failed to encode DistributedQueryExec logical plan")
             })?;
         let proto = protobuf::BallistaPhysicalPlanNode {
             physical_plan_type: Some(PhysicalPlanType::DistributedQuery(
@@ -516,6 +512,11 @@ mod test {
     use super::*;
     use ballista_core::execution_plans::UnresolvedShuffleExec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::catalog::MemTable;
+    use datafusion::datasource::provider_as_source;
+    use datafusion::logical_expr::{
+        ColumnarValue, LogicalPlanBuilder, Volatility, create_udf,
+    };
     use datafusion::physical_plan::Partitioning;
     use datafusion::prelude::SessionContext;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
@@ -700,6 +701,81 @@ mod test {
             .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()
             .expect("decoded plan should be DistributedQueryExec");
         assert_eq!(decoded.plan(), &plan);
+    }
+
+    #[test]
+    fn test_distributed_query_encode_error_keeps_its_cause() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let table = MemTable::try_new(schema, vec![vec![]]).unwrap();
+        let plan =
+            LogicalPlanBuilder::scan("t", provider_as_source(Arc::new(table)), None)
+                .unwrap()
+                .build()
+                .unwrap();
+        let exec: Arc<dyn ExecutionPlan> =
+            Arc::new(DistributedQueryExec::<LogicalPlanNode>::new(
+                "df://localhost:50050".to_string(),
+                BallistaConfig::default(),
+                plan,
+                "session-1".to_string(),
+            ));
+
+        let codec = PyBallistaPhysicalExtensionCodec::default();
+        let converter = DefaultPhysicalProtoConverter {};
+        let err = codec.try_encode(exec, &mut vec![], &converter).unwrap_err();
+
+        assert!(
+            matches!(err.find_root(), DataFusionError::NotImplemented(_)),
+            "cause lost: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("failed to encode DistributedQueryExec logical plan"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_distributed_query_decode_error_keeps_its_cause() {
+        let ctx = SessionContext::new();
+        ctx.register_udf(create_udf(
+            "encode_only_udf",
+            vec![DataType::Int64],
+            DataType::Int64,
+            Volatility::Immutable,
+            Arc::new(|args: &[ColumnarValue]| Ok(args[0].clone())),
+        ));
+        let plan = ctx
+            .sql("SELECT encode_only_udf(1) AS a")
+            .await
+            .unwrap()
+            .logical_plan()
+            .clone();
+        let exec: Arc<dyn ExecutionPlan> =
+            Arc::new(DistributedQueryExec::<LogicalPlanNode>::new(
+                "df://localhost:50050".to_string(),
+                BallistaConfig::default(),
+                plan,
+                "session-1".to_string(),
+            ));
+
+        let codec = PyBallistaPhysicalExtensionCodec::default();
+        let converter = DefaultPhysicalProtoConverter {};
+        let mut buf = vec![];
+        codec.try_encode(exec, &mut buf, &converter).unwrap();
+        let err = codec
+            .try_decode(&buf, &[], &SessionContext::new().task_ctx(), &converter)
+            .unwrap_err();
+
+        assert!(
+            matches!(err.find_root(), DataFusionError::Plan(_)),
+            "cause lost: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("failed to decode DistributedQueryExec logical plan"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

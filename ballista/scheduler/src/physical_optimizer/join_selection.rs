@@ -44,7 +44,7 @@ use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::execution_plan::EmissionType;
-use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
+use datafusion::physical_plan::joins::utils::ColumnIndex;
 use datafusion::physical_plan::joins::{
     CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
     StreamJoinPartitionMode, SymmetricHashJoinExec,
@@ -127,6 +127,10 @@ fn supports_collect_by_thresholds(
 ///
 /// `join_type` must be the join type *after* any build-side swap, since the
 /// build side is always the left input of the resulting `HashJoinExec`.
+///
+/// Nested-loop joins use it too: those it rejects must read their whole probe
+/// side in one task, since each task would emit build rows from its own slice
+/// of the probe.
 pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
     matches!(
         join_type,
@@ -136,52 +140,6 @@ pub(crate) fn collect_left_broadcast_safe(join_type: JoinType) -> bool {
             | JoinType::RightAnti
             | JoinType::RightMark
     )
-}
-
-/// Predicate that checks whether the given join type supports input swapping.
-#[deprecated(since = "45.0.0", note = "use JoinType::supports_swap instead")]
-#[allow(dead_code)]
-pub(crate) fn supports_swap(join_type: JoinType) -> bool {
-    join_type.supports_swap()
-}
-
-/// This function returns the new join type we get after swapping the given
-/// join's inputs.
-#[deprecated(since = "45.0.0", note = "use datafusion-functions-nested instead")]
-#[allow(dead_code)]
-pub(crate) fn swap_join_type(join_type: JoinType) -> JoinType {
-    join_type.swap()
-}
-
-/// This function swaps the inputs of the given join operator.
-/// This function is public so other downstream projects can use it
-/// to construct `HashJoinExec` with right side as the build side.
-#[deprecated(since = "45.0.0", note = "use HashJoinExec::swap_inputs instead")]
-pub fn swap_hash_join(
-    hash_join: &HashJoinExec,
-    partition_mode: PartitionMode,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    hash_join.swap_inputs(partition_mode)
-}
-
-/// Swaps inputs of `NestedLoopJoinExec` and wraps it into `ProjectionExec` is required
-#[deprecated(since = "45.0.0", note = "use NestedLoopJoinExec::swap_inputs")]
-#[allow(dead_code)]
-pub(crate) fn swap_nl_join(join: &NestedLoopJoinExec) -> Result<Arc<dyn ExecutionPlan>> {
-    join.swap_inputs()
-}
-
-/// Swaps join sides for filter column indices and produces new `JoinFilter` (if exists).
-#[deprecated(since = "45.0.0", note = "use filter.map(JoinFilter::swap) instead")]
-#[allow(dead_code)]
-fn swap_join_filter(filter: Option<&JoinFilter>) -> Option<JoinFilter> {
-    filter.map(JoinFilter::swap)
-}
-
-#[deprecated(since = "45.0.0", note = "use JoinFilter::swap instead")]
-#[allow(dead_code)]
-pub(crate) fn swap_filter(filter: &JoinFilter) -> JoinFilter {
-    filter.swap()
 }
 
 impl PhysicalOptimizerRule for JoinSelection {

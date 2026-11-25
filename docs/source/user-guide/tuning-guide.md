@@ -264,25 +264,32 @@ two independent triggers fires:
 - the per-task buffered-bytes budget
   (`ballista.shuffle.sort_based.memory_limit_per_task_bytes`) is reached. This
   budget is counted independently of the memory pool, so it bounds the writer's
-  memory even when the pool is unbounded (the default). Setting it to `0`
-  disables this trigger, leaving memory-pool pressure as the sole spill signal.
+  memory even when the pool is unbounded (`--memory-pool-size 0`). Setting it
+  to `0` disables this trigger, leaving memory-pool pressure as the sole spill
+  signal.
 
 **Warning:** setting `memory_limit_per_task_bytes` to `0` while the executor
-uses the default unbounded memory pool disables both spill triggers. The writer
-then buffers the entire task's shuffle output in memory and never spills, which
-can exhaust the executor and cause an out-of-memory failure on large inputs.
-Only use `0` together with a bounded memory pool (see
+runs an unbounded memory pool (`--memory-pool-size 0`) disables both spill
+triggers. The writer then buffers the entire task's shuffle output in memory
+and never spills, which can exhaust the executor and cause an out-of-memory
+failure on large inputs. Only use `0` together with a bounded memory pool (the
+default; see
 [Configuring Executor Memory Pool](#configuring-executor-memory-pool)), so
 pool pressure still forces spilling.
 
-After the input stream finishes, the remaining in-memory data and any spilled
-batches are written into a single consolidated Arrow IPC file per input
-partition, alongside an index file that lets readers seek directly to a given
-output partition.
+At the end of input, the writer encodes each output partition's buffered rows
+and reserves the encoded bytes from the memory pool. A partition whose bytes
+the pool refuses is appended to its spill file instead. The per-task budget
+does not apply to this step, so only memory-pool pressure can make it spill.
+With an unbounded pool (`--memory-pool-size 0`) it never does.
 
-This produces `2 × N` files instead of `N × M`, coalesces small batches
-to a target size before writing, and bounds shuffle memory use via
-spilling.
+The task's in-memory data and any spilled batches are then written into a
+single consolidated Arrow IPC file per task, alongside an index file that lets
+readers seek directly to a given output partition.
+
+This produces two files per task instead of one per input and output
+partition pair, coalesces small batches to a target size before writing, and
+bounds shuffle memory use via spilling.
 
 Worst-case sort-shuffle memory per executor is approximately
 `vcores × memory_limit_per_task_bytes`, since one writer task can run per
@@ -480,7 +487,9 @@ line that times each pass leaves that time out and gives it separately.
 The implementation covers the happy path only. The following are known to be
 missing or incomplete:
 
-- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986))
+- Executor failure handling on the AQE path ([#1986](https://github.com/apache/datafusion-ballista/issues/1986)):
+  a job that loses the output of a stage that has already finished fails
+  instead of rerunning the stage
 - Switching from hash join to sort-merge join based on runtime statistics ([#1988](https://github.com/apache/datafusion-ballista/issues/1988))
 - Switching from streaming aggregation to hash aggregation based on runtime statistics ([#1989](https://github.com/apache/datafusion-ballista/issues/1989))
 
@@ -504,15 +513,34 @@ cached.collect().await?;       // reads it
 ```
 
 - Cached data is shuffle output on the executors. If a query loses part of it
-  (an executor holding it is lost, or a fetch from it fails), the query fails
-  with "lost DataFrame::cache() data; retry the query", and the retry rebuilds
-  the cache.
-- Cached data is not evicted yet: it is kept until it is found lost, so cache
-  only what you reuse.
+  (an executor holding it is lost, or a fetch from it fails), it rebuilds the
+  cache and carries on. A query planned by the adaptive planner, a pipelined
+  query once its tasks have started, or one that also reads the lost cache, or
+  a cache it was built from, another way (a self-join of a cached frame, say),
+  fails instead with "lost DataFrame::cache() data; retry the query", and the
+  retry rebuilds the cache.
+- Cached data is not evicted yet: it is kept until it is found lost, or its
+  session is removed through the scheduler's `RemoveSession` gRPC call, which
+  the Rust and Python clients do not expose yet. So cache only what you reuse.
+  Each `cache()` call caches its DataFrame anew; an earlier call's cache is not
+  freed.
 - `EXPLAIN` of a cached DataFrame never builds it.
 - An operator can turn caching off for the whole cluster with the scheduler's
   `--disable-dataframe-cache` flag; cached DataFrames are then computed as part
   of each query.
+
+A cache works in both execution modes. Its build always runs staged, and
+queries over it run in the session's mode, so a
+[pipelined](pipelined-execution.md) session reads a cache with streaming
+queries.
+
+A full example, in staged and pipelined modes, from
+[`examples/examples/standalone-dataframe-cache.rs`](https://github.com/apache/datafusion-ballista/blob/main/examples/examples/standalone-dataframe-cache.rs):
+
+```{literalinclude} ../../../examples/examples/standalone-dataframe-cache.rs
+:language: rust
+:start-after: under the License.
+```
 
 See the [DataFrame cache design](../contributors-guide/dataframe-cache.md) for
 how it works.

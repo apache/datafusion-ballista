@@ -27,7 +27,7 @@ use crate::state::execution_graph::{
     StageOutput,
 };
 use crate::state::execution_stage::{
-    RunningStage, external_inputs, is_external_fetch_failure,
+    RunningStage, external_fetch_failures, external_inputs,
 };
 use crate::state::task_manager::UpdatedStages;
 use ballista_core::JobId;
@@ -36,11 +36,11 @@ use ballista_core::execution_plans::{
     PartitionedBoundedWindowAggExec, PrefixMergeExec, RangeFilterExec, cut_partitions,
     merge_runtime_stats_reports, prefix_merge_window_state, repartition_routing_expr,
 };
+use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    FailedJob, FailedTask, JobStatus, ResultLost, RunningJob, SuccessfulJob, TaskStatus,
-    job_status, task_status,
+    FailedJob, JobStatus, RunningJob, SuccessfulJob, TaskStatus, job_status, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorEndpoint, ExecutorMetadata, PartitionLocation,
@@ -53,6 +53,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::windows::WindowExpr;
 use datafusion::prelude::SessionConfig;
 use datafusion::scalar::ScalarValue;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -74,6 +75,8 @@ pub mod optimizer_rule;
 pub(crate) mod plan_change_log;
 pub mod planner;
 pub(crate) mod reuse_exchange;
+mod runtime_filter;
+mod runtime_filter_planner;
 pub(crate) mod skew_join;
 #[cfg(test)]
 mod test;
@@ -93,7 +96,9 @@ mod test;
 ///
 /// with many limitations, such as:
 ///
-/// - it does not cover executor failure
+/// - executor failure only partly: tasks of a running stage that ran on a
+///   lost executor are rerun, but a finished stage whose output was lost is
+///   not, and the job fails instead
 /// - dynamically coalescing shuffle partitions, not supported yet
 /// - does not switch from hash join to sort merge join
 /// - does not switch from streaming aggregation to hash aggregation
@@ -111,6 +116,7 @@ pub(crate) struct AdaptiveExecutionGraph {
     scheduler_id: Option<String>,
     /// Adaptive Planner to be used with this execution graph
     planner: AdaptivePlanner,
+    runtime_filters: Option<runtime_filter::RuntimeFilterRegistry>,
     /// ID for this job
     job_id: JobId,
     /// Job name, can be empty string
@@ -147,23 +153,48 @@ pub(crate) struct AdaptiveExecutionGraph {
     logical_plan: Option<String>,
 }
 
+/// What the scheduler, rather than the job's session, adds to planning a job
+/// adaptively.
+#[derive(Debug, Clone)]
+pub(crate) struct SchedulerExtensions {
+    /// The codec the scheduler ships stages with, which exchange reuse
+    /// matches stages on.
+    pub(crate) physical_codec: Arc<dyn PhysicalExtensionCodec>,
+    /// See [`SchedulerConfig::adaptive_rules`](crate::config::SchedulerConfig::adaptive_rules).
+    pub(crate) adaptive_rules: Option<Arc<dyn AdaptiveRules>>,
+}
+
+impl Default for SchedulerExtensions {
+    fn default() -> Self {
+        Self {
+            physical_codec: Arc::new(BallistaPhysicalExtensionCodec::default()),
+            adaptive_rules: None,
+        }
+    }
+}
+
 impl AdaptiveExecutionGraph {
     /// Creates a new `ExecutionGraph` from a physical execution plan.
     ///
     /// This will use the `DistributedPlanner` to break the plan into stages
     /// and build the DAG structure needed for distributed execution.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn try_new(
+    pub(crate) async fn try_new(
         scheduler_id: &str,
         job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
         logical_plan: &LogicalPlan,
         queued_at: u64,
-        rules: Option<&dyn AdaptiveRules>,
+        extensions: SchedulerExtensions,
     ) -> ballista_core::error::Result<Self> {
-        let planner =
-            AdaptivePlanner::try_new(ctx, logical_plan, job_id.clone(), rules).await?;
+        let planner = AdaptivePlanner::try_new(
+            ctx,
+            logical_plan,
+            job_id.clone(),
+            extensions.adaptive_rules,
+        )
+        .await?
+        .with_physical_codec(extensions.physical_codec);
         let logical_plan = Some(logical_plan.display_indent().to_string());
 
         Self::try_new_with_planner(
@@ -181,21 +212,22 @@ impl AdaptiveExecutionGraph {
     ///
     /// The plan is prepared and staged by [`AdaptivePlanner::try_new_from_physical`];
     /// the graph has no logical plan to display.
-    pub fn try_new_from_physical(
+    pub(crate) fn try_new_from_physical(
         scheduler_id: &str,
         job_id: &JobId,
         job_name: &str,
         ctx: &SessionContext,
         physical_plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
-        rules: Option<&dyn AdaptiveRules>,
+        extensions: SchedulerExtensions,
     ) -> ballista_core::error::Result<Self> {
         let planner = AdaptivePlanner::try_new_from_physical(
             ctx,
             physical_plan,
             job_id.clone(),
-            rules,
-        )?;
+            extensions.adaptive_rules,
+        )?
+        .with_physical_codec(extensions.physical_codec);
 
         Self::try_new_with_planner(
             scheduler_id,
@@ -244,8 +276,23 @@ impl AdaptiveExecutionGraph {
                 .collect();
         let stages = stages?;
 
+        let filter_config = session_config
+            .options()
+            .extensions
+            .get::<ballista_core::config::BallistaConfig>();
+        let runtime_filters = filter_config
+            .filter(|config| config.runtime_filter_enabled())
+            .map(|_| {
+                let mut registry = runtime_filter::RuntimeFilterRegistry::default();
+                for (&id, stage) in &stages {
+                    registry.register(id, stage.plan());
+                }
+                registry
+            });
+
         Ok(Self {
             planner,
+            runtime_filters,
             scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_owned(),
             job_name: job_name.to_owned(),
@@ -326,10 +373,6 @@ impl AdaptiveExecutionGraph {
             for (stage_id, failure_reasons) in updated_stages.rollback_running_stages {
                 let tasks = self.rollback_running_stage(stage_id, failure_reasons)?;
                 running_tasks_to_cancel.extend(tasks);
-            }
-
-            for stage_id in updated_stages.resubmit_successful_stages {
-                self.rerun_successful_stage(stage_id);
             }
 
             if !running_tasks_to_cancel.is_empty() {
@@ -578,6 +621,9 @@ impl AdaptiveExecutionGraph {
                             self.session_config.clone(),
                             stage,
                         )?;
+                        if let Some(registry) = &mut self.runtime_filters {
+                            registry.register(stage_id, stage.plan());
+                        }
                         self.stages.insert(stage_id, stage);
                     }
                 }
@@ -643,8 +689,8 @@ impl AdaptiveExecutionGraph {
         }
     }
 
-    fn get_running_stage_id(&mut self, black_list: &[usize]) -> Option<usize> {
-        let mut running_stage_id = self.stages.iter().find_map(|(stage_id, stage)| {
+    fn find_running_stage_id(&self, black_list: &[usize]) -> Option<usize> {
+        self.stages.iter().find_map(|(stage_id, stage)| {
             if black_list.contains(stage_id) {
                 None
             } else if let ExecutionStage::Running(stage) = stage {
@@ -656,19 +702,40 @@ impl AdaptiveExecutionGraph {
             } else {
                 None
             }
-        });
+        })
+    }
 
-        // If no available tasks found in the running stage,
-        // try to find a resolved stage and convert it to the running stage
-        if running_stage_id.is_none() {
-            if self.revive() {
-                running_stage_id = self.get_running_stage_id(black_list);
-            } else {
-                running_stage_id = None;
+    fn prepare_runtime_filters(&mut self, id: usize) {
+        let Some(registry) = &mut self.runtime_filters else {
+            return;
+        };
+        let plan = self.stages[&id].plan_arc();
+        match registry.prepare(id, plan.clone(), &self.stages) {
+            Ok(prepared) if !Arc::ptr_eq(&prepared, &plan) => {
+                let ExecutionStage::Running(stage) = self.stages.get_mut(&id).unwrap()
+                else {
+                    unreachable!()
+                };
+                stage.replace_plan(prepared);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!(
+                    "Runtime filter unavailable for stage {id}; bypassing: {error}"
+                );
             }
         }
+    }
 
-        running_stage_id
+    fn get_running_stage_id(&mut self, black_list: &[usize]) -> Option<usize> {
+        if let Some(id) = self.find_running_stage_id(black_list) {
+            self.prepare_runtime_filters(id);
+            Some(id)
+        } else if self.revive() {
+            self.get_running_stage_id(black_list)
+        } else {
+            None
+        }
     }
 
     fn reset_stages_internal(
@@ -775,36 +842,52 @@ impl AdaptiveExecutionGraph {
                     }
                 });
         }
-
-        for stage_id in rollback_resolved_stages.iter() {
-            self.rollback_resolved_stage(*stage_id)?;
-        }
-
-        let mut all_running_tasks = vec![];
-        for stage_id in rollback_running_stages.iter() {
-            let tasks = self.rollback_running_stage(
+        // The lost executor held output of a finished stage that later stages
+        // still need, and AQE cannot rerun a finished stage yet. The caller
+        // fails the job on this error rather than leaving it to hang.
+        if let Some(stage_id) = resubmit_successful_stages.iter().min() {
+            return Err(BallistaError::General(cannot_rerun_finished_stage(
                 *stage_id,
-                HashSet::from([executor_id.to_owned()]),
-            )?;
-            all_running_tasks.extend(tasks);
+            )));
+        }
+        // Any other stage whose input was on the lost executor would be rolled
+        // back to unresolved, and nothing in the adaptive graph resolves a
+        // stage again: stages only come resolved from the planner. Fail rather
+        // than leave it to hang.
+        if let Some(stage_id) = rollback_resolved_stages
+            .union(&rollback_running_stages)
+            .min()
+        {
+            return Err(BallistaError::General(format!(
+                "stage {stage_id} lost input on executor {executor_id}, and \
+                 adaptive query execution cannot roll back a stage yet; retry \
+                 the query, or set ballista.planner.adaptive.enabled to false \
+                 to use the static planner, which recovers lost output"
+            )));
         }
 
-        for stage_id in resubmit_successful_stages.iter() {
-            self.rerun_successful_stage(*stage_id);
-        }
-
-        let mut reset_stage = HashSet::new();
-        reset_stage.extend(reset_running_stage);
-        reset_stage.extend(rollback_resolved_stages);
-        reset_stage.extend(rollback_running_stages);
-        reset_stage.extend(resubmit_successful_stages);
-        Ok((reset_stage, all_running_tasks))
+        // Only tasks of running stages were reset; they are rescheduled, and
+        // none are left running to cancel.
+        Ok((reset_running_stage, vec![]))
     }
 
     /// Clear the stage failure count for this stage if the stage is finally success
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
     }
+}
+
+/// Why a job fails when it needs the lost output of finished stage
+/// `stage_id`: AQE cannot rerun a finished stage (#1986, #2539). Its planner
+/// no longer tracks the stage, so the rerun's tasks could not report, and
+/// the job would hang.
+fn cannot_rerun_finished_stage(stage_id: usize) -> String {
+    format!(
+        "the output of finished stage {stage_id} was lost, and adaptive query \
+         execution cannot rerun a finished stage yet; retry the query, or set \
+         ballista.planner.adaptive.enabled to false to use the static planner, \
+         which recovers lost output"
+    )
 }
 
 impl ExecutionGraph for AdaptiveExecutionGraph {
@@ -939,10 +1022,6 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
         let mut successful_stages = HashSet::new();
         let mut failed_stages = HashMap::new();
-        let mut rollback_running_stages = HashMap::new();
-        let mut resubmit_successful_stages: HashMap<usize, HashSet<usize>> =
-            HashMap::new();
-        let reset_running_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
 
         //
         //
@@ -1013,55 +1092,56 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}"
                                             );
                                             warn!("{error_msg}");
-                                        } else if is_external_fetch_failure(
+                                        } else if !external_fetch_failures(
                                             &running_stage.inputs,
                                             &executor_id,
                                             map_stage_id,
                                             map_partition_id,
-                                        ) {
-                                            // Cache data is another job's output,
-                                            // which this graph cannot re-run.
+                                        )
+                                        .is_empty()
+                                        {
+                                            // Cache data is another job's output, and
+                                            // this graph cannot re-resolve a rolled-back
+                                            // stage to read a rebuild.
                                             let error_msg = format!(
                                                 "Stage {stage_id} {CACHE_DATA_LOST} on executor {executor_id}; retry the query"
                                             );
                                             error!("{error_msg}");
                                             failed_stages.insert(stage_id, error_msg);
                                         } else {
-                                            // There are different removal strategies here.
-                                            // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks
-                                            // need to rerun, but this might miss many more bad input partitions, lead to more stage level retries in following.
-                                            // Here we choose remove all the bad input partitions which match the same executor id in this single input stage.
-                                            // There are other more aggressive approaches, like considering the executor is lost and check all the running stages in this graph.
-                                            // Or count the fetch failure number on executor and mark the executor lost globally.
-                                            let removed_map_partitions = running_stage
-                                                .remove_input_partitions(
-                                                    map_stage_id,
-                                                    map_partition_id,
-                                                    &executor_id,
-                                                )?;
-
-                                            let failure_reasons = rollback_running_stages
-                                                .entry(stage_id)
-                                                .or_insert_with(HashSet::new);
-                                            failure_reasons.insert(executor_id);
-
-                                            let missing_inputs =
-                                                resubmit_successful_stages
-                                                    .entry(map_stage_id)
-                                                    .or_default();
-                                            missing_inputs.extend(removed_map_partitions);
-                                            warn!(
-                                                "Need to resubmit the current running Stage {stage_id} and its map Stage {map_stage_id} due to FetchPartitionError from task {task_identity}"
-                                            )
+                                            // Recovering would rerun the finished map
+                                            // stage, which AQE cannot do yet: fail this
+                                            // reading stage, and with it the job,
+                                            // instead of hanging it.
+                                            let error_msg =
+                                                cannot_rerun_finished_stage(map_stage_id);
+                                            error!(
+                                                "Stage {stage_id} failed to fetch partition {map_partition_id} of stage {map_stage_id} from executor {executor_id}: {error_msg}"
+                                            );
+                                            failed_stages.insert(stage_id, error_msg);
                                         }
                                     } else {
-                                        let error_msg = format!(
+                                        let mut error_msg = format!(
                                             "Stage {} has failed {} times, \
                                             most recent failure reason: {:?}",
                                             stage_id,
                                             max_stage_failures,
                                             failed_task.error
                                         );
+                                        if !external_fetch_failures(
+                                            &running_stage.inputs,
+                                            &fetch_partition_error.executor_id,
+                                            fetch_partition_error.map_stage_id as usize,
+                                            fetch_partition_error.map_partition_id
+                                                as usize,
+                                        )
+                                        .is_empty()
+                                        {
+                                            error_msg.push_str(&format!(
+                                                " ({CACHE_DATA_LOST} on executor {}; retry the query)",
+                                                fetch_partition_error.executor_id
+                                            ));
+                                        }
                                         error!("{error_msg}");
                                         failed_stages.insert(stage_id, error_msg);
                                     }
@@ -1119,9 +1199,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                             if let Err(e) = running_stage
                                 .update_task_metrics(task_id, operator_metrics)
                             {
-                                warn!(
-                                    "Ignoring the metrics of task {task_id} in stage {stage_id} of job {job_id}: {e}"
-                                );
+                                running_stage.log_skipped_metrics(&job_id, task_id, &e);
                             }
 
                             let ballista_core::serde::protobuf::SuccessfulTask {
@@ -1158,8 +1236,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                     // all task updates have been handled
                     //
 
-                    let is_final_successful = running_stage.is_successful()
-                        && !reset_running_stages.contains_key(&stage_id);
+                    let is_final_successful = running_stage.is_successful();
 
                     if is_final_successful {
                         successful_stages.insert(stage_id);
@@ -1230,77 +1307,14 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 .insert(*stage_id, HashSet::from_iter(attempts.iter().copied()));
         }
 
-        // Values coming out of `remove_input_partitions` are task_ids
-        // (append slots) under the multi-partition-task model (see the mirror
-        // site in `execution_graph.rs` for the TODO on partition-id semantics).
-        for (stage_id, missing_task_ids) in &resubmit_successful_stages {
-            if let Some(stage) = self.stages.get_mut(stage_id) {
-                if let ExecutionStage::Successful(success_stage) = stage {
-                    for task_id in missing_task_ids {
-                        if *task_id >= success_stage.task_infos.len() {
-                            return Err(BallistaError::Internal(format!(
-                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
-                                *task_id,
-                                stage_id,
-                                success_stage.task_infos.len()
-                            )));
-                        }
-                        let task_info = &mut success_stage.task_infos[*task_id];
-                        // Update the task info to failed
-                        task_info.task_status = task_status::Status::Failed(FailedTask {
-                            error: "FetchPartitionError in parent stage".to_owned(),
-                            retryable: true,
-                            count_to_failures: false,
-                            failed_reason: Some(FailedReason::ResultLost(ResultLost {})),
-                        });
-                    }
-                } else {
-                    warn!(
-                        "Stage {job_id}/{stage_id} is not in Successful state when try to resubmit this stage. "
-                    );
-                }
-            } else {
-                return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {stage_id} for job {job_id}"
-                )));
-            }
-        }
-
-        for (stage_id, missing_task_ids) in &reset_running_stages {
-            if let Some(stage) = self.stages.get_mut(stage_id) {
-                if let ExecutionStage::Running(running_stage) = stage {
-                    for task_id in missing_task_ids {
-                        if *task_id >= running_stage.task_infos.len() {
-                            return Err(BallistaError::Internal(format!(
-                                "Invalid task_id {} in map stage {} (task_infos has {} entries)",
-                                *task_id,
-                                stage_id,
-                                running_stage.task_infos.len()
-                            )));
-                        }
-                        running_stage.reset_task_info(*task_id);
-                    }
-                } else {
-                    warn!(
-                        "Stage {job_id}/{stage_id} is not in Running state when try to reset the running task. "
-                    );
-                }
-            } else {
-                return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {stage_id} for job {job_id}"
-                )));
-            }
-        }
-
         self.processing_stages_update(UpdatedStages {
             resolved_stages: Default::default(),
             successful_stages,
             failed_stages,
-            rollback_running_stages,
-            resubmit_successful_stages: resubmit_successful_stages
-                .keys()
-                .cloned()
-                .collect(),
+            // A fetch failure fails its stage instead of rolling it back and
+            // rerunning its input; see above.
+            rollback_running_stages: Default::default(),
+            resubmit_successful_stages: Default::default(),
         })
     }
 
@@ -1392,19 +1406,23 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     /// The default implementation treats a stage with no `output_links` as
     /// final. Adaptive stages are created without output links, so it would
-    /// report every stage as final and no intermediate shuffle data would be
-    /// reclaimed when the job succeeds. Here a stage is final when the job's
-    /// `output_locations` point at it. Until those are set, nothing is
-    /// reported, so a final stage is never returned.
-    fn intermediate_stage_ids(&self) -> Vec<u32> {
-        if self.output_locations.is_empty() {
-            return vec![];
-        }
-        let final_stage_ids: HashSet<usize> = self
-            .output_locations
+    /// report every stage as final. Here a stage is final when the job's
+    /// `output_locations` point at it, so nothing is reported until those are
+    /// set.
+    fn final_stage_ids(&self) -> HashSet<usize> {
+        self.output_locations
             .iter()
             .map(|location| location.partition_id.stage_id)
-            .collect();
+            .collect()
+    }
+
+    /// Until the final stage is known, nothing is reported, so a final stage
+    /// is never returned.
+    fn intermediate_stage_ids(&self) -> Vec<u32> {
+        let final_stage_ids = self.final_stage_ids();
+        if final_stage_ids.is_empty() {
+            return vec![];
+        }
         self.stages
             .keys()
             .filter(|stage_id| !final_stage_ids.contains(stage_id))
@@ -1433,6 +1451,18 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
                 return Ok((reset, tasks_to_cancel));
             }
         }
+    }
+
+    fn reset_unlaunched_task(
+        &mut self,
+        task: &crate::state::execution_graph::TaskDescription,
+        executor_id: &str,
+    ) -> bool {
+        crate::state::execution_graph::reset_unlaunched_task_in_stages(
+            &mut self.stages,
+            task,
+            executor_id,
+        )
     }
 
     /// Convert unresolved stage to be resolved
@@ -1537,7 +1567,9 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         }
     }
 
-    /// Convert successful stage to be running
+    /// Convert successful stage to be running. The adaptive graph does not
+    /// call this: its planner no longer tracks a finished stage, so it fails
+    /// the job instead (see [cannot_rerun_finished_stage]).
     fn rerun_successful_stage(&mut self, stage_id: usize) -> bool {
         if let Some(ExecutionStage::Successful(stage)) = self.stages.remove(&stage_id) {
             self.stages
@@ -1636,13 +1668,11 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
         let job_id = self.job_id.clone();
         let session_id = self.session_id.clone();
 
-        let mut next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                stage.available_tasks() > 0
-            } else {
-                false
-            }
-        }).map(|(stage_id, stage)| {
+        let ready_id = self.find_running_stage_id(&[]);
+        if let Some(id) = ready_id {
+            self.prepare_runtime_filters(id);
+        }
+        let mut next_task = ready_id.and_then(|id| self.stages.get_mut(&id).map(|stage| (id, stage))).map(|(stage_id, stage)| {
             if let ExecutionStage::Running(stage) = stage {
                 use ballista_core::serde::scheduler::TaskKey;
 
@@ -1681,7 +1711,7 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
                 let key = TaskKey {
                     job_id,
-                    stage_id: *stage_id,
+                    stage_id,
                     task_id,
                 };
 

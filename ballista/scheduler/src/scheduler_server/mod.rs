@@ -16,7 +16,7 @@
 // under the License.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ballista_core::error::{BallistaError, Result};
@@ -162,9 +162,6 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     /// Set once the scheduler is shutting down: it keeps serving the jobs it
     /// has, but takes no new ones and reports itself not ready.
     draining: Arc<AtomicBool>,
-    /// Submissions admitted and not yet registered as running jobs, see
-    /// [`Admission`].
-    admissions: Arc<AtomicUsize>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -267,7 +264,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             generator,
             shutdown_tx: broadcast::channel(1).0,
             draining: Arc::new(AtomicBool::new(false)),
-            admissions: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -348,9 +344,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// until planning has registered it as running, covers that gap and the one
     /// between admission and the pending count.
     pub fn active_job_number(&self) -> usize {
-        self.admissions.load(Ordering::SeqCst)
+        self.state.admissions.load(Ordering::SeqCst)
             + self.pending_job_number()
             + self.running_job_number()
+    }
+
+    /// Removes `session_id` and its `DataFrame::cache()` data. Without the
+    /// event loop the scheduler is stopping and the caches cannot be dropped:
+    /// the session is removed anyway, and the error returned.
+    pub(crate) async fn remove_session_and_caches(&self, session_id: &str) -> Result<()> {
+        match self.query_stage_event_loop.get_sender() {
+            Ok(sender) => self.state.remove_session(session_id, &sender).await,
+            Err(e) => {
+                self.state
+                    .session_manager
+                    .remove_session(session_id)
+                    .await?;
+                Err(e)
+            }
+        }
     }
 
     /// Admits a job submission, or refuses it if the scheduler is shutting
@@ -362,7 +374,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     /// [`start_draining`](Self::start_draining) sets the flag before anyone
     /// reads the count, so a submission is either refused or counted.
     pub(crate) fn admit(&self) -> Result<Admission> {
-        let admission = Admission::new(&self.admissions);
+        let admission = Admission::new(&self.state.admissions);
         if self.is_draining() {
             return Err(shutting_down());
         }

@@ -22,16 +22,28 @@
 //! must keep those shuffles as stage boundaries and must not make decisions
 //! that assume it knows what an extension operator does with its input.
 
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::planner::AdaptivePlanner;
 use crate::state::aqe::test::{
     Embedder, Seen, coalesce_config, mock_batch, partitions_with_byte_sizes,
 };
 use crate::test_utils::PassThroughExec;
 use ballista_core::assert_plan;
+use ballista_core::execution_plans::CoalescePlan;
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{internal_datafusion_err, internal_err};
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_plan::empty::EmptyExec;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, Partitioning,
+    PlanProperties,
+};
 use datafusion::prelude::SessionContext;
+use std::fmt::Formatter;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -177,7 +189,7 @@ async fn should_run_an_embedders_rules_on_a_submitted_plan()
         &ctx,
         plan,
         "test_job".into(),
-        Some(&embedder),
+        Some(Arc::new(embedder)),
     )?;
 
     assert_eq!(seen.preparation_runs.load(Ordering::Relaxed), 1);
@@ -196,6 +208,217 @@ async fn should_run_an_embedders_rules_on_a_submitted_plan()
 
     assert_eq!(seen.preparation_runs.load(Ordering::Relaxed), 1);
     assert_eq!(seen.replan_runs.load(Ordering::Relaxed), 2);
+
+    Ok(())
+}
+
+/// An operator over a descriptor with one partition per partition of the
+/// operator, and an input with as many partitions, as Comet's
+/// `CometFragmentExec` is. It can't be built over an input whose partition
+/// count differs from its descriptor's.
+#[derive(Debug)]
+struct AlignedExec {
+    children: Vec<Arc<dyn ExecutionPlan>>,
+    properties: Arc<PlanProperties>,
+}
+
+impl AlignedExec {
+    fn try_new(
+        descriptor: Arc<dyn ExecutionPlan>,
+        input: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let partitions = descriptor.output_partitioning().partition_count();
+        let actual = input.output_partitioning().partition_count();
+        if actual != partitions {
+            return internal_err!(
+                "AlignedExec input has {actual} partitions, expected {partitions}"
+            );
+        }
+        let properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(input.schema()),
+            Partitioning::UnknownPartitioning(partitions),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        Ok(Arc::new(Self {
+            children: vec![descriptor, input],
+            properties,
+        }))
+    }
+}
+
+impl DisplayAs for AlignedExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "AlignedExec")
+    }
+}
+
+impl ExecutionPlan for AlignedExec {
+    fn name(&self) -> &str {
+        "AlignedExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        self.children.iter().collect()
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(
+            &Arc<dyn PhysicalExpr>,
+        ) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let [descriptor, input] = <[_; 2]>::try_from(children)
+            .map_err(|_| internal_datafusion_err!("AlignedExec has two children"))?;
+        Self::try_new(descriptor, input)
+    }
+
+    fn execute(
+        &self,
+        _partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        internal_err!("AlignedExec is only planned")
+    }
+}
+
+/// An embedder whose operators, [`PassThroughExec`]s and [`AlignedExec`]s,
+/// tolerate a coalesced partition count. With `rebuild_descriptors`, it
+/// rebuilds an `AlignedExec`'s descriptor for the coalesced count.
+#[derive(Debug)]
+struct ToleratingEmbedder {
+    rebuild_descriptors: bool,
+}
+
+impl AdaptiveRules for ToleratingEmbedder {
+    fn tolerates_partition_count_change(&self, plan: &dyn ExecutionPlan) -> bool {
+        plan.is::<PassThroughExec>() || plan.is::<AlignedExec>()
+    }
+
+    fn with_coalesced_children(
+        &self,
+        plan: &Arc<dyn ExecutionPlan>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        coalesce: &CoalescePlan,
+    ) -> Option<datafusion::common::Result<Arc<dyn ExecutionPlan>>> {
+        if !self.rebuild_descriptors || !plan.is::<AlignedExec>() {
+            return None;
+        }
+        let descriptor = Arc::new(
+            EmptyExec::new(children[0].schema()).with_partitions(coalesce.groups.len()),
+        );
+        Some(AlignedExec::try_new(descriptor, Arc::clone(&children[1])))
+    }
+}
+
+/// Plans `plan` with `embedder`'s rules, finishes its first stage with 8
+/// partitions of 50 bytes, which pack to 2 at the 200-byte target, and
+/// returns the stage that runs next.
+fn next_stage_after_coalescing(
+    ctx: &SessionContext,
+    plan: Arc<dyn ExecutionPlan>,
+    embedder: ToleratingEmbedder,
+) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    let mut planner = AdaptivePlanner::try_new_from_physical(
+        ctx,
+        plan,
+        "test_job".into(),
+        Some(Arc::new(embedder)),
+    )?;
+    let _ = planner.runnable_stages()?.unwrap();
+    planner.finalise_stage_internal(0, partitions_with_byte_sizes(&[50; 8]))?;
+    let mut stages = planner.runnable_stages()?.unwrap();
+    assert_eq!(stages.len(), 1);
+    Ok(Arc::clone(&stages.remove(0).plan) as Arc<dyn ExecutionPlan>)
+}
+
+/// An extension operator the embedder's rules declare tolerant has the
+/// shuffle it reads coalesced, as a DataFusion operator would.
+#[tokio::test]
+async fn should_coalesce_shuffle_feeding_tolerated_extension_operator()
+-> datafusion::common::Result<()> {
+    let ctx = physical_context(true);
+    let plan = hand_built_plan(&ctx, |shuffle| {
+        Arc::new(PassThroughExec::new("OpaqueExec", shuffle))
+    })
+    .await?;
+    let embedder = ToleratingEmbedder {
+        rebuild_descriptors: false,
+    };
+
+    let stage = next_stage_after_coalescing(&ctx, plan, embedder)?;
+
+    assert_plan!(stage.as_ref(), @r"
+    ShuffleWriterExec: partitioning: Hash([c@2], 2)
+      OpaqueExec
+        ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@2], 2), coalesce: 2 of 8
+    ");
+
+    Ok(())
+}
+
+/// An operator with per-partition state beside its inputs is rebuilt for the
+/// coalesced partition count by the embedder's rules.
+#[tokio::test]
+async fn should_rebuild_extension_operator_over_coalesced_shuffle()
+-> datafusion::common::Result<()> {
+    let ctx = physical_context(true);
+    let plan = hand_built_plan(&ctx, |shuffle| {
+        let descriptor = Arc::new(EmptyExec::new(shuffle.schema()).with_partitions(8));
+        AlignedExec::try_new(descriptor, shuffle).unwrap()
+    })
+    .await?;
+    let embedder = ToleratingEmbedder {
+        rebuild_descriptors: true,
+    };
+
+    let stage = next_stage_after_coalescing(&ctx, plan, embedder)?;
+
+    // `AlignedExec` checks that its descriptor has as many partitions as the
+    // coalesced reader, so building it shows the descriptor was rebuilt.
+    assert_plan!(stage.as_ref(), @r"
+    ShuffleWriterExec: partitioning: UnknownPartitioning(2)
+      AlignedExec
+        EmptyExec
+        ShuffleReaderExec: upstream_stage: 0, partitioning: Hash([c@2], 2), coalesce: 2 of 8
+    ");
+
+    Ok(())
+}
+
+/// Without the embedder rebuilding it, the operator is rebuilt over the
+/// coalesced shuffle with its descriptor as it was, which it rejects.
+#[tokio::test]
+async fn should_fail_extension_operator_its_rules_do_not_rebuild()
+-> datafusion::common::Result<()> {
+    let ctx = physical_context(true);
+    let plan = hand_built_plan(&ctx, |shuffle| {
+        let descriptor = Arc::new(EmptyExec::new(shuffle.schema()).with_partitions(8));
+        AlignedExec::try_new(descriptor, shuffle).unwrap()
+    })
+    .await?;
+    let embedder = ToleratingEmbedder {
+        rebuild_descriptors: false,
+    };
+
+    let err = next_stage_after_coalescing(&ctx, plan, embedder).unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("AlignedExec input has 2 partitions, expected 8"),
+        "{err}"
+    );
 
     Ok(())
 }

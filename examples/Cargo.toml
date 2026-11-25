@@ -39,6 +39,11 @@ path = "examples/standalone-broadcast-join.rs"
 required-features = ["ballista/standalone"]
 
 [[example]]
+name = "standalone_dataframe_cache"
+path = "examples/standalone-dataframe-cache.rs"
+required-features = ["ballista/standalone"]
+
+[[example]]
 name = "mtls-cluster"
 path = "examples/mtls-cluster.rs"
 required-features = ["tls"]
@@ -54,12 +59,12 @@ rustls = { version = "0.23", features = ["ring"], optional = true }
 [dev-dependencies]
 arrow-flight = { workspace = true }
 ballista = { workspace = true }
-ballista-core = { path = "../ballista/core", version = "55.0.0", default-features = false, features = [
+ballista-core = { path = "../ballista/core", version = "56.0.0", default-features = false, features = [
     "build-binary",
     "arrow-ipc-optimizations",
 ] }
-ballista-executor = { path = "../ballista/executor", version = "55.0.0", default-features = false }
-ballista-scheduler = { path = "../ballista/scheduler", version = "55.0.0", default-features = false }
+ballista-executor = { path = "../ballista/executor", version = "56.0.0", default-features = false }
+ballista-scheduler = { path = "../ballista/scheduler", version = "56.0.0", default-features = false }
 ctor = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
