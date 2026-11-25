@@ -19,7 +19,7 @@
 name = "ballista-iceberg"
 description = "Apache Iceberg support for Ballista"
 license = "Apache-2.0"
-version = "55.0.0"
+version = "56.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -41,38 +41,37 @@ publish = false
 ignored = ["arrow-schema"]
 
 [dependencies]
-arrow-schema = { version = "59.2.0", features = ["serde"] }
+arrow-schema = { version = "60.2.0", features = ["serde"] }
 async-trait = "0.1"
 # A commit on main with ComposedLogicalExtensionCodec (#2752) and the
 # partition-sliceable resolver (#2721), not the crates in this repo, so a
-# change to Ballista doesn't break this build. It is the last commit before
-# Ballista moved to DataFusion 56, which iceberg-datafusion doesn't support
-# yet. Move to crates.io once a release includes both.
-ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "2f4938ef05c38f8e68f944d6aed22f2f5714a9ed", version = "55.0.0" }
-ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "2f4938ef05c38f8e68f944d6aed22f2f5714a9ed", version = "55.0.0", default-features = false, optional = true }
-ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "2f4938ef05c38f8e68f944d6aed22f2f5714a9ed", version = "55.0.0", default-features = false, optional = true }
-datafusion = "55"
-datafusion-proto = "55"
+# change to Ballista doesn't break this build. Move to crates.io once a
+# release includes both.
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0", default-features = false, optional = true }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0", default-features = false, optional = true }
+datafusion = "56"
+datafusion-proto = "56"
 futures = "0.3"
 # Not released yet. Keep `iceberg` at the revision iceberg-datafusion's own
 # workspace pins, so cargo resolves a single iceberg crate.
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
-iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg", rev = "82cea1462bff959021b881311c9ef9f4f22328af" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "90e454aa51863afd0ad70dd92cf0a2aed1995e07" }
+iceberg-datafusion = { git = "https://github.com/apache/datafusion-iceberg", rev = "73fc3bbcf3bef71ea36b2f57ca6f8e8b2ef442bb" }
 # Storage for rebuilt tables: S3 and local files by default.
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "90e454aa51863afd0ad70dd92cf0a2aed1995e07" }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-arrow-flight = { version = "59.2.0", features = ["flight-sql-experimental"] }
-ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "2f4938ef05c38f8e68f944d6aed22f2f5714a9ed", version = "55.0.0", features = [
+arrow-flight = { version = "60.2.0", features = ["flight-sql"] }
+ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0", features = [
     "standalone",
 ] }
-ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "2f4938ef05c38f8e68f944d6aed22f2f5714a9ed", version = "55.0.0", features = [
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "446fa54c9949be15dc1f03a54ff2df360b24d0bf", version = "56.0.0", features = [
     "flight-sql",
 ] }
-iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "5b82ab99aeaf50bf4f5b3b776ac9cd6380a5f3e3" }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust", rev = "90e454aa51863afd0ad70dd92cf0a2aed1995e07" }
 tempfile = "3.27"
 testcontainers = { version = "0.28", features = ["http_wait_plain"] }
 tokio = { version = "1", features = ["macros"] }

@@ -55,14 +55,12 @@
 //!
 //! - Reads only.
 //! - Each scan runs as a single task.
+//! - No eager file planning (`iceberg.execution.eager_file_planning`).
 //! - No metadata tables such as `t$snapshots`.
 //! - A view, or a `DataFrame` or prepared statement reused across runs, reads
 //!   the version from when it was planned.
 //! - No encrypted tables.
 //! - Storage credentials travel in plain text.
-//! - A `UNION` or `UNION ALL` can fail, or with an `ORDER BY` return rows more
-//!   than once, when the adaptive planner splits its stage between tasks.
-//!   Disabling the adaptive planner avoids it.
 
 mod catalog;
 #[cfg(feature = "executor")]

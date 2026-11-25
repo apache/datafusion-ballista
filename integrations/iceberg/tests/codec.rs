@@ -32,7 +32,7 @@ mod iceberg_nodes {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::physical_plan::{collect, displayable};
-    use datafusion::prelude::{SessionContext, col, lit};
+    use datafusion::prelude::{SessionConfig, SessionContext, col, lit};
     use datafusion_proto::bytes::{
         logical_plan_from_bytes_with_extension_codec,
         logical_plan_to_bytes_with_extension_codec,
@@ -40,9 +40,10 @@ mod iceberg_nodes {
     use datafusion_proto::logical_plan::LogicalExtensionCodec;
     use datafusion_proto::physical_plan::DefaultPhysicalProtoConverter;
     use iceberg::inspect::MetadataTableType;
-    use iceberg_datafusion::IcebergStaticTableProvider;
     use iceberg_datafusion::metadata::IcebergMetadataTableProvider;
-    use iceberg_datafusion::read::IcebergDataSource;
+    use iceberg_datafusion::read::{IcebergDataSource, LazyFileScanTaskProvider};
+    use iceberg_datafusion::{IcebergDataFusionConfig, IcebergStaticTableProvider};
+    use std::any::Any;
 
     use crate::common::{catalog_table, insert, memory_catalog};
 
@@ -54,12 +55,12 @@ mod iceberg_nodes {
         let first = first.metadata().current_snapshot_id().unwrap();
         let table = insert(&catalog, "(4, 'd')").await;
         let provider =
-            IcebergStaticTableProvider::try_new_from_table_snapshot(table, first).await?;
+            IcebergStaticTableProvider::try_new_from_table_snapshot(table, first)?;
         let state = SessionStateBuilder::new().with_default_features().build();
         let ctx = SessionContext::new_with_state(register_iceberg(state));
         let filters = [col("id").gt(lit(1))];
         let scan = provider
-            .scan(&ctx.state(), Some(&vec![1]), &filters, Some(1))
+            .scan(&ctx.state(), Some(&[1]), &filters, Some(1))
             .await?;
 
         // The session's codecs: Ballista's, then Iceberg's.
@@ -77,14 +78,46 @@ mod iceberg_nodes {
             .downcast_ref::<DataSourceExec>()
             .and_then(|exec| exec.data_source().downcast_ref::<IcebergDataSource>())
             .unwrap();
-        assert_eq!(source.snapshot_id(), Some(first));
+        let tasks = (source.file_scan_task_provider() as &dyn Any)
+            .downcast_ref::<LazyFileScanTaskProvider>()
+            .unwrap();
+        assert_eq!(tasks.snapshot_id(), Some(first));
         assert_eq!(
             displayable(decoded.as_ref()).one_line().to_string(),
-            "DataSourceExec: format=iceberg, projection=[name], predicate=id > 1, fetch=1\n"
+            "DataSourceExec: format=iceberg, projection=[name], provider=lazy, predicate=id > 1, fetch=1\n"
         );
         let result = collect(decoded, ctx.task_ctx()).await?;
         let expected = ["+------+", "| name |", "+------+", "| b    |", "+------+"];
         assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_refuse_eagerly_planned_scans() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let catalog = memory_catalog(dir.path()).await;
+        let table = insert(&catalog, "(1, 'a')").await;
+        let provider = IcebergStaticTableProvider::try_new_from_table(table)?;
+        let mut iceberg = IcebergDataFusionConfig::default();
+        iceberg.execution.eager_file_planning = true;
+        let state = SessionStateBuilder::new()
+            .with_config(SessionConfig::new().with_option_extension(iceberg))
+            .with_default_features()
+            .build();
+        let ctx = SessionContext::new_with_state(register_iceberg(state));
+        let scan = provider.scan(&ctx.state(), None, &[], None).await?;
+
+        let codec = ctx.state().config().ballista_physical_extension_codec();
+        let error = codec
+            .try_encode(scan, &mut Vec::new(), &DefaultPhysicalProtoConverter {})
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "This feature is not implemented: Iceberg scans planned eagerly, with \
+             iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
+        );
 
         Ok(())
     }
@@ -163,10 +196,10 @@ mod iceberg_nodes {
              a version: build the client's session with ballista_iceberg::register_iceberg"
         );
         assert_eq!(
-            encode(Arc::new(IcebergMetadataTableProvider::new(
+            encode(Arc::new(IcebergMetadataTableProvider::try_new(
                 table,
                 MetadataTableType::Snapshots
-            ))),
+            )?)),
             "This feature is not implemented: Iceberg metadata table t isn't supported \
              on Ballista yet"
         );

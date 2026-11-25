@@ -17,11 +17,12 @@
 
 //! Sends Iceberg scans from the scheduler to executors.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, not_impl_err};
+use datafusion::common::{Result, internal_datafusion_err, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
@@ -29,8 +30,11 @@ use datafusion_proto::physical_plan::{
     ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
     PhysicalProtoConverterExtension,
 };
+use futures::FutureExt;
 use iceberg::expr::Predicate;
-use iceberg_datafusion::read::IcebergDataSource;
+use iceberg_datafusion::read::{
+    FileScanTaskProviderBuilder, IcebergDataSource, LazyFileScanTaskProvider,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{self, TableWire};
@@ -72,15 +76,34 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         &self,
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        ctx: &TaskContext,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let scan: ScanWire = wire::decode(buf)?;
-        let source = IcebergDataSource::builder(scan.table.load()?, scan.schema)
-            .with_snapshot_id(scan.snapshot_id)
-            .with_predicate(scan.predicate)
-            .with_fetch(scan.fetch)
-            .build()?;
+        let table = scan.table.load()?;
+        // A default context leaves eager file planning off, so the provider
+        // discovers files when the scan runs, and building it awaits nothing.
+        let tasks = FileScanTaskProviderBuilder::new(
+            Arc::new(TaskContext::default()),
+            table.clone(),
+            Arc::clone(&scan.schema),
+        )
+        .with_snapshot_id(scan.snapshot_id)
+        .with_predicate(scan.predicate)
+        .build()
+        .now_or_never()
+        .ok_or_else(|| {
+            internal_datafusion_err!("building a lazy Iceberg scan waited on I/O")
+        })??;
+        let source = IcebergDataSource::builder(
+            ctx.session_config(),
+            scan.schema,
+            table.file_io().clone(),
+            table.reader_builder(),
+            tasks,
+        )
+        .with_fetch(scan.fetch)
+        .build()?;
         Ok(DataSourceExec::from_data_source(source))
     }
 
@@ -105,13 +128,21 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
                 "Iceberg scans with {partitions} partitions aren't supported on Ballista yet"
             );
         }
+        // Executors discover the scan's files themselves, from the table.
+        let tasks = source.file_scan_task_provider() as &dyn Any;
+        let Some(tasks) = tasks.downcast_ref::<LazyFileScanTaskProvider>() else {
+            return not_impl_err!(
+                "Iceberg scans planned eagerly, with \
+                 iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
+            );
+        };
         wire::encode(
             buf,
             &ScanWire {
-                table: TableWire::new(source.table())?,
-                snapshot_id: source.snapshot_id(),
+                table: TableWire::new(tasks.table())?,
+                snapshot_id: tasks.snapshot_id(),
                 schema: source.schema(),
-                predicate: source.predicate().cloned(),
+                predicate: tasks.predicate().cloned(),
                 fetch: source.fetch(),
             },
         )

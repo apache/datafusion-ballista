@@ -24,6 +24,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{
     CatalogProvider, CatalogProviderList, SchemaProvider, Session, TableProvider,
 };
+use datafusion::common::utils::project_schema;
 use datafusion::common::{Result, not_impl_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::source::DataSourceExec;
@@ -31,7 +32,7 @@ use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 use iceberg::table::Table;
-use iceberg_datafusion::read::IcebergDataSource;
+use iceberg_datafusion::read::{FileScanTaskProviderBuilder, IcebergDataSource};
 use iceberg_datafusion::{IcebergCatalogTableProvider, to_datafusion_error};
 
 /// A session's catalogs, serving each catalog-backed Iceberg table as a
@@ -172,17 +173,30 @@ impl TableProvider for PinnedTable {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        state: &dyn Session,
+        projection: Option<&[usize]>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let source = IcebergDataSource::builder(self.table.clone(), self.schema.clone())
-            .with_snapshot_id(self.snapshot_id)
-            .with_projection(projection)
-            .with_filters(filters)
-            .with_fetch(limit)
-            .build()?;
+        let schema = project_schema(&self.schema, projection)?;
+        let tasks = FileScanTaskProviderBuilder::new(
+            state.task_ctx(),
+            self.table.clone(),
+            Arc::clone(&schema),
+        )
+        .with_snapshot_id(self.snapshot_id)
+        .with_filters(filters)
+        .build()
+        .await?;
+        let source = IcebergDataSource::builder(
+            state.config(),
+            schema,
+            self.table.file_io().clone(),
+            self.table.reader_builder(),
+            tasks,
+        )
+        .with_fetch(limit)
+        .build()?;
         Ok(DataSourceExec::from_data_source(source))
     }
 

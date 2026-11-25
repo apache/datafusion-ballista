@@ -145,6 +145,10 @@ and executors must all set the same codecs in the same order.
 - **One task per scan.** Iceberg scans do not split into partitions yet, so one
   executor reads the whole table. Operators after the first shuffle still run
   in parallel. A scan reporting more than one partition fails to encode.
+- **No eager file planning.** With `iceberg.execution.eager_file_planning`
+  set, a scan lists its files while it is planned, and Ballista can't send that
+  list to an executor yet, so the query fails. Executors list the files
+  themselves when it is off, as it is by default.
 - **No encrypted tables.** A table with `encryption.key-id` set fails to load
   on the scheduler and executors, which have no key management client.
 - **Storage credentials travel in plain text.** Each table's serialized

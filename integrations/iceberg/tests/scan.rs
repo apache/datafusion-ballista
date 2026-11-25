@@ -92,10 +92,11 @@ mod standalone {
 
     const UNION: &str = "SELECT id, name FROM t UNION ALL SELECT id, name FROM t";
 
-    #[tokio::test]
-    async fn should_union_scans_on_a_split_stage_with_the_static_planner() -> Result<()> {
+    /// Runs a union of two scans, and the same union sorted, with each branch
+    /// in a task of its own.
+    async fn assert_union_on_a_split_stage(adaptive: bool) -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let ctx = split_stage_context(dir.path(), false).await?;
+        let ctx = split_stage_context(dir.path(), adaptive).await?;
         let expected = [
             "+----+------+",
             "| id | name |",
@@ -110,8 +111,7 @@ mod standalone {
         let result = ctx.sql(UNION).await?.collect().await?;
         assert_batches_sorted_eq!(expected, &result);
 
-        // Each branch is sorted before the union, which the adaptive planner
-        // gets wrong too (#2854).
+        // Each branch is sorted before the union (#2854).
         let sorted = format!("{UNION} ORDER BY id");
         let result = ctx.sql(&sorted).await?.collect().await?;
         assert_batches_eq!(expected, &result);
@@ -119,29 +119,14 @@ mod standalone {
         Ok(())
     }
 
-    // A known limitation: the adaptive planner keeps both branches in the
-    // union's stage, and the task that owns one branch can't restrict the
-    // other branch's Iceberg scan to none of its partitions (#2852).
     #[tokio::test]
-    async fn should_refuse_a_union_of_scans_on_a_split_stage_with_the_adaptive_planner()
-    -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let ctx = split_stage_context(dir.path(), true).await?;
+    async fn should_union_scans_on_a_split_stage_with_the_static_planner() -> Result<()> {
+        assert_union_on_a_split_stage(false).await
+    }
 
-        let error = ctx.sql(UNION).await?.collect().await.unwrap_err();
-        // The message starts with the job's id.
-        let error = error.to_string();
-        let (_, cause) = error.split_once("DataFusion error: ").unwrap();
-        assert_eq!(
-            cause,
-            "Error during planning: cannot restrict `DataSourceExec: format=iceberg, \
-             projection=[id, name]` to partitions [] of its 1: the scheduler does not \
-             know how to restrict a `DataSourceExec`, and left alone it would number \
-             its partitions from zero in every task. A node of your own can be \
-             restricted by `SchedulerConfig::partition_sliceable_resolver`, for \
-             instance by implementing `PartitionSliceable` and calling it from there."
-        );
-
-        Ok(())
+    #[tokio::test]
+    async fn should_union_scans_on_a_split_stage_with_the_adaptive_planner() -> Result<()>
+    {
+        assert_union_on_a_split_stage(true).await
     }
 }
