@@ -101,6 +101,49 @@ rewrites the approved files. Review the resulting changes under
 `ballista/scheduler/tests/tpch_plan_stability/approved/` and commit them together with the code
 change that caused them.
 
+### DataFusion sqllogictest suite
+
+The `ballista-sqllogictest` crate runs DataFusion's own
+[sqllogictest](https://github.com/apache/datafusion/tree/main/datafusion/sqllogictest) files on plain
+DataFusion and on standalone Ballista with the static and the adaptive planner, and checks every
+query result against the file. Each file runs on each engine in a child process with its own
+standalone cluster.
+
+Many records still fail on Ballista. The ones that are known to fail are listed, with a reason, in
+[`ballista/sqllogictest/expected_failures.txt`](https://github.com/apache/datafusion-ballista/blob/main/ballista/sqllogictest/expected_failures.txt).
+A run fails only on records that fail and aren't listed. Listed records that pass are reported, but
+don't fail the run.
+
+The files read data by paths relative to a DataFusion checkout, so the suite needs one at the version
+of the `datafusion-sqllogictest` crate in `Cargo.lock`, with its `testing` and `parquet-testing`
+submodules:
+
+```shell
+git clone --depth 1 --branch 56.0.0 https://github.com/apache/datafusion.git ../datafusion
+git -C ../datafusion submodule update --init --depth 1 testing parquet-testing
+export BALLISTA_SLT_DATAFUSION_DIR=$PWD/../datafusion/datafusion/sqllogictest
+
+# Every file, about 40 minutes
+cargo test -p ballista-sqllogictest --test sqllogictests -- --report report.md
+# Only files whose path contains `window`, on the adaptive planner
+cargo test -p ballista-sqllogictest --test sqllogictests -- window --engines ballista-aqe
+# One record
+cargo test -p ballista-sqllogictest --test sqllogictests -- union.slt:841
+```
+
+Without `BALLISTA_SLT_DATAFUSION_DIR` the test passes without running anything, so a plain
+`cargo test` doesn't need the checkout. `-- --help` lists the options.
+
+When a change fixes listed records, or makes a new record fail for a known reason, rerun the affected
+files with `--update-expected`. That rewrites the list for the files and engines that ran, keeping the
+reasons of records that still fail. Records that fail for a new reason get a generic one; replace it
+with an issue number. Review the diff of `expected_failures.txt` and commit it with the change. A file
+that hangs or can't run on an engine is listed with `skip` in place of line numbers and isn't run on
+that engine; delete its line to try it again.
+
+The `sqllogictest` workflow runs the suite nightly, on demand, and on pull requests that change
+`ballista/sqllogictest/`. It uploads the report, with every failure, as an artifact.
+
 ## Running the examples
 
 ```shell
@@ -239,7 +282,9 @@ The `datafusion*` entries in the workspace `Cargo.toml` move through one cycle p
 
 A release branch therefore only ever depends on published crates. Each `rev` bump on `main` is a PR
 that ports any DataFusion API changes, refreshes affected golden files, and keeps `cargo test` and
-`cargo clippy --all-targets --workspace -- -D warnings` green.
+`cargo clippy --all-targets --workspace -- -D warnings` green. `datafusion-sqllogictest` moves with
+the other `datafusion*` entries. A new revision brings new and changed `.slt` files, so regenerate
+the [sqllogictest expected-failure list](#datafusion-sqllogictest-suite) as well.
 
 The Python client in `python/` is a separate Cargo workspace that also depends on
 [datafusion-python](https://github.com/apache/datafusion-python). It can only move to a new

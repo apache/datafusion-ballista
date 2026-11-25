@@ -27,6 +27,7 @@ members = [
     "ballista/history",
     "ballista/result-service",
     "ballista/scheduler",
+    "ballista/sqllogictest",
     "benchmarks",
     "chaos-testing",
     "examples",
@@ -64,6 +65,7 @@ datafusion-cli = "56"
 datafusion-functions-aggregate-common = "56"
 datafusion-proto = "56"
 datafusion-proto-common = "56"
+datafusion-sqllogictest = "56"
 datafusion-substrait = "56"
 
 ctor = { version = "1.0" }

@@ -47,6 +47,14 @@ This section provides links to the source code for major areas of functionality.
 - [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/client)
 - [Context Extensions](https://github.com/apache/datafusion-ballista/blob/main/ballista/client/src/extension.rs)
 
+### ballista-sqllogictest crate
+
+Runs DataFusion's sqllogictest files against standalone Ballista. Not published. See
+[the DataFusion sqllogictest suite](development.md#datafusion-sqllogictest-suite).
+
+- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/sqllogictest)
+- [Expected Failures](https://github.com/apache/datafusion-ballista/blob/main/ballista/sqllogictest/expected_failures.txt)
+
 ### PyBallista
 
 - [Source](https://github.com/apache/datafusion-ballista/tree/main/python)

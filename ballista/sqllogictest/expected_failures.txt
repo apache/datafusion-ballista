@@ -1,0 +1,678 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Records of DataFusion's sqllogictest files that are known to fail, by engine.
+#
+#   <engine> <file> <lines> <reason>
+#
+# engine: datafusion, ballista-static, ballista-aqe, or ballista for both
+#         Ballista engines.
+# lines:  the lines the failing records start on, or `skip` to not run the
+#         file on that engine (it hangs or can't run). 0 is an error about
+#         the whole file.
+#
+# A listed record may fail but doesn't have to. Regenerate this file with
+# `--update-expected`; reasons of records that still fail are kept. See
+# docs/source/contributors-guide/development.md.
+
+ballista aggregate.slt 174,180,183,424,427,430,433,436,441,444,803,1896,1899,1902,1948,1951,2526,2917,2920,2923,2926,2929,2932,2962,2965,2969,2972,2999,3002,3006,3009,3068,3071,3074,3077,3098,3790,4612,4615,4618,8393,8396 #2967 runtime errors are wrapped
+ballista aggregate.slt 2162,2172,2182,7369,7377,7383,7392,7397,7590,7602,7607,7613,7618,7623,7628,7633,7638,7643,7648,7653,7659,7665,7671,7677,7689 table missing after an earlier failure
+ballista aggregate.slt 3022,7300,7306,7901 wrong result
+ballista aggregate.slt 3692 #1294 view types are disabled
+ballista aggregate.slt 6544,6554,9844 fails
+ballista aggregate.slt 7366,7387,7587 #2963 dictionary columns come back decoded
+ballista aggregate.slt 9293,9304 #2964 Float16 comes back as Float32
+
+ballista aggregates_simplify.slt 263,268 #2959 session functions are dropped
+
+ballista array/array_range.slt 25,29,32,179,319,322,342,346,352,355,359,362 #2967 runtime errors are wrapped
+
+ballista array/array_repeat.slt 33,70 #2967 runtime errors are wrapped
+
+ballista array/array_resize.slt 55,58,63,68,184,187,190 #2967 runtime errors are wrapped
+
+ballista array/array_reverse.slt 94 #1294 view types are disabled
+
+ballista array/array_slice.slt 26 #2967 runtime errors are wrapped
+
+ballista array/array_sort.slt 151 #2967 runtime errors are wrapped
+
+ballista array/array_to_string.slt 58 #2963 dictionary columns come back decoded
+
+ballista array_agg.slt 257,261 #2967 runtime errors are wrapped
+ballista array_agg.slt 627,645,654 #2963 dictionary columns come back decoded
+
+ballista arrow_field.slt 86 #1294 view types are disabled
+ballista arrow_field.slt 113,119,131,136 #2960 tables registered before Ballista starts are dropped
+
+ballista arrow_files.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista arrow_files.slt 376 #2967 runtime errors are wrapped
+ballista-aqe arrow_files.slt 236 #2942 sanity check after DistributedExchangeRule
+
+ballista arrow_try_cast.slt 46 #2963 dictionary columns come back decoded
+
+datafusion arrow_typeof.slt 309 also fails on plain DataFusion
+ballista arrow_typeof.slt 130 #2964 Float16 comes back as Float32
+ballista arrow_typeof.slt 147,165,264,273 table missing after an earlier failure
+ballista arrow_typeof.slt 256 #2963 dictionary columns come back decoded
+ballista arrow_typeof.slt 309 also fails on plain DataFusion
+
+ballista asof_join.slt 818,822 logical plan can't be serialized
+
+ballista async_udf.slt 9,29,54,72,93 #2959 session functions are dropped
+
+ballista binary_view.slt 18 #2963 dictionary columns come back decoded
+ballista binary_view.slt 54,59,66,79,98,113,128,143,158,174,188 table missing after an earlier failure
+
+ballista case.slt 770,798,922 #2963 dictionary columns come back decoded
+ballista case.slt 780,808,830,833,931,950 table missing after an earlier failure
+
+ballista cast_extension_type_metadata.slt 23 batches don't match the plan's schema
+ballista cast_extension_type_metadata.slt 126,170 wrong result
+
+ballista cast_to_type.slt 94,99,104,278 wrong result
+
+ballista coalesce.slt 206,243,256,292,297,302 #2963 dictionary columns come back decoded
+ballista coalesce.slt 209,215,222,228,261,270,279,288 table missing after an earlier failure
+ballista coalesce.slt 468,476,481,489,501,517,522,529 #2959 session functions are dropped
+
+ballista config_matrix.slt 57 #1294 view types are disabled
+
+ballista copy.slt 26,76,104,248,260,650 #2963 dictionary columns come back decoded
+ballista copy.slt 36 #2967 runtime errors are wrapped
+ballista copy.slt 235,520,536 fails
+ballista copy.slt 445,454,463,707,728,749,785,795,807 doesn't fail
+ballista copy.slt 523,539 table missing after an earlier failure
+ballista copy.slt 555,612 wrong result
+
+ballista copy_avro.slt 17,35,52,68,79,101,146 fails
+ballista copy_avro.slt 22,38,56,72,83,104,149 table missing after an earlier failure
+
+ballista cse.slt 232,238,244,250,256 fails
+
+ballista csv_files.slt 24,31,173,229,256 fails
+ballista csv_files.slt 341 doesn't fail
+ballista csv_files.slt 465,494,534,560,588 wrong result
+
+ballista cte.slt 58,64,70,79,85 table missing after an earlier failure
+ballista cte.slt 119,171,191,206,260,275,291,356,411,465,482,558,592,788,832,892,957,986,998,1009,1021,1064,1074,1083,1092,1205,1381,1439,1524,1579,1593,1606,1617,1629,1641,1664,1676,1687,1699,1711,1731,1771,1785,1800,1867,1901,1941,1962 #2968 CTE can't be serialized
+ballista cte.slt 1554 wrong result
+
+ballista cte_materialized.slt 19,68,81,128,139,146,156,166,174,181,189,198,205,214,280,334,343,357,362,374,414,432,438,464,527,585,617,630,666,673,687,697,724,749,774,800,825,853,919,932,945,960,972,984,997,1013,1029,1047,1061,1075,1090,1101,1112 #2968 CTE can't be serialized
+ballista cte_materialized.slt 224 logical plan can't be serialized
+ballista cte_materialized.slt 808,816 wrong result
+
+ballista date_bin_errors.slt 8,25,30,37,44,62,69,74,77,80,84,132,135,138,141,145,150,157,164,168,173,176,179 #2967 runtime errors are wrapped
+
+ballista datetime/arith_date_interval.slt 43,46,49,52,55 #2967 runtime errors are wrapped
+
+ballista datetime/arith_interval_double.slt 25 #2967 runtime errors are wrapped
+
+ballista datetime/date_part.slt 1114,1117,1120,1123,1374,1491,1494,1497,2518,2521,2524,2527 #2967 runtime errors are wrapped
+
+ballista datetime/dates.slt 135,151,291,316,320,438,442 #2967 runtime errors are wrapped
+
+datafusion datetime/timestamps.slt 2861 also fails on plain DataFusion
+ballista datetime/timestamps.slt 854,857,860,895,899,970,1039,2988,3166,3170,3174,3178,3182,4084,4087,4090,4093,4096,4099,4126,4371,4383,4386,4389,4392,4395,4398,4766,4769,4948,5200,5547,5550,6530 #2967 runtime errors are wrapped
+ballista datetime/timestamps.slt 2861 also fails on plain DataFusion
+ballista datetime/timestamps.slt 2885,2900,3017 wrong result
+ballista datetime/timestamps.slt 4050,4074,4337,4361 fails
+ballista-aqe datetime/timestamps.slt 3052 #2942 sanity check after DistributedExchangeRule
+
+datafusion datetime/timestamps_timezone.slt 1525,1556,1567,1570,1593,1596,1602,1605 also fails on plain DataFusion
+ballista datetime/timestamps_timezone.slt 88,138,179,222,258,846 #2965 session time zone isn't applied on executors
+ballista datetime/timestamps_timezone.slt 1525,1556,1567,1570,1593,1596,1602,1605 also fails on plain DataFusion
+
+ballista ddl.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista ddl.slt 906,924 #1294 view types are disabled
+
+ballista decimal.slt 1288,1298,1308 fails
+
+ballista describe.slt 59,81,87,121 #1294 view types are disabled
+
+ballista dictionary.slt 52,127,198,254,329,379,448,474,506,526,561,597,624,643,669 #2963 dictionary columns come back decoded
+ballista dictionary.slt 338,346,354,362,371,387,418,469,479,487,493,500,503,513,521,546,556,580,590,611,619,652,657,662,674,679,688,697,706,715 table missing after an earlier failure
+
+ballista dictionary_struct.slt 34,40,50,60,65,71,80,90,100,110,119,129,136,144 #2960 tables registered before Ballista starts are dropped
+
+ballista dml_delete.slt 13,30,47,65,83,104,130,148,153,158,176,208,226 UPDATE / DELETE on a memory table can't be serialized
+ballista dml_delete.slt 18,35,52,70,109,135,163,181,211 wrong result
+ballista dml_delete.slt 316,319,322 logical plan can't be serialized
+
+ballista dml_update.slt 13,32,54,73,93,113,138,157,179,198,221,268,284,315,336,344 UPDATE / DELETE on a memory table can't be serialized
+ballista dml_update.slt 18,37,59,78,98,143,162,184,207,226,273,287,318,347 wrong result
+ballista dml_update.slt 446,449 logical plan can't be serialized
+
+ballista dynamic_file.slt 56,84,112,140,168 #2963 dictionary columns come back decoded
+ballista dynamic_file.slt 181,194 logical plan can't be serialized
+
+ballista dynamic_filter_pushdown_config.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista dynamic_row_group_pruning.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista eliminate_join_distinct.slt 191,194 #2967 runtime errors are wrapped
+
+ballista encoding.slt 71,74,77,80,86,238,241,244 #2967 runtime errors are wrapped
+ballista encoding.slt 83 #1294 view types are disabled
+
+ballista errors.slt 31,146 #2967 runtime errors are wrapped
+
+ballista explain_analyze.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista explain_tree.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista explain_tree.slt 94,113 #2963 dictionary columns come back decoded
+
+ballista expr.slt 419,422,425,429,711,715 #2967 runtime errors are wrapped
+
+ballista file_row_index.slt 24,33,45,70,95,142 fails
+
+ballista first_last_ordered.slt 107,119,132,162 fails
+
+ballista float16.slt 24 #2964 Float16 comes back as Float32
+
+datafusion from_unixtime_timezone.slt 106,119 also fails on plain DataFusion
+ballista from_unixtime_timezone.slt 61,124,128,140 #2965 session time zone isn't applied on executors
+ballista from_unixtime_timezone.slt 106,119 also fails on plain DataFusion
+ballista from_unixtime_timezone.slt 112 #2967 runtime errors are wrapped
+
+ballista-aqe functional_dependencies.slt skip #2955 stalls on the adaptive planner
+
+ballista functions.slt 57,72,419,424,434,459,543,554,559,573,585,609,637,647,679,684,694,719,782,804,815,821,843,888,898,915,920,932,953,963,975,1048,1055,1069 #2963 dictionary columns come back decoded
+ballista functions.slt 466,473,598,623,634,726,733,852,861,988,999,1075,1086,1097 table missing after an earlier failure
+ballista functions.slt 515 #1294 view types are disabled
+ballista functions.slt 1306,1311 #2959 session functions are dropped
+
+ballista group_by.slt 1930,1937,1950,1961,5968,5981 fails
+ballista group_by.slt 2106,2136,2169,2195,2222,2283,2293,2404,2423,2441,4398 plan node can't be serialized
+ballista group_by.slt 2528,2845,2877,2907,5304 wrong result
+ballista group_by.slt 4753,4791,4829,4867,4905,4943,4981,5019 #2963 dictionary columns come back decoded
+ballista group_by.slt 4763,4771,4779,4787,4801,4809,4817,4825,4839,4847,4855,4863,4877,4885,4893,4901,4915,4923,4931,4939,4953,4961,4969,4977,4991,4999,5007,5015,5029,5037,5045,5053,5842,5848,5853 table missing after an earlier failure
+ballista group_by.slt 5833 #2964 Float16 comes back as Float32
+
+ballista grouping.slt 359,365 #2962 GROUPING SETS (()) returns no rows
+ballista grouping.slt 371,378,384,390 wrong result
+
+ballista in_list.slt 41,600,660,731 wrong result
+
+ballista information_schema.slt 196,363 #2963 dictionary columns come back decoded
+
+ballista information_schema_table_types.slt 21 wrong result
+
+ballista input_file_name.slt 64 #2967 runtime errors are wrapped
+
+ballista insert.slt 248,292,366,380,386,412 fails
+ballista insert.slt 280,286,289,355 #2967 runtime errors are wrapped
+
+ballista insert_to_external.slt 31,57,86,91,178 #2963 dictionary columns come back decoded
+ballista insert_to_external.slt 35,51,73 table missing after an earlier failure
+ballista insert_to_external.slt 326 plan node can't be serialized
+ballista insert_to_external.slt 594,600,603,635 #2967 runtime errors are wrapped
+
+ballista join_disable_repartition_joins.slt 51,1431 wrong result
+ballista-aqe join_disable_repartition_joins.slt 96 wrong result
+
+ballista-static join_is_not_distinct_from.slt 272 wrong result
+
+ballista join_limit_pushdown.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista-static join_limit_pushdown.slt 216 wrong result
+ballista-aqe join_limit_pushdown.slt 68,90,133,154 wrong result
+
+ballista join_only.slt 1431 wrong result
+
+ballista joins.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista joins.slt 165,184,5513 #2963 dictionary columns come back decoded
+ballista joins.slt 2636,2651,2655,2670,2703,2722,2743,2763,2810,2838,2868,5523,5532 table missing after an earlier failure
+ballista joins.slt 3960,4423,4431,4467,5930 wrong result
+ballista joins.slt 4131,4155 logical plan can't be serialized
+ballista-static joins.slt 5258 wrong result
+
+ballista lateral_join.slt 667,671,675,682,695,702,709,722,735 logical plan can't be serialized
+ballista-aqe lateral_join.slt 185,195,205,215,308,403 wrong result
+
+ballista limit.slt 757 plan node can't be serialized
+ballista limit.slt 1161,1171,1181 wrong result
+
+ballista listing_table_partitions.slt 21,42,105,113,125,195 #2963 dictionary columns come back decoded
+ballista listing_table_partitions.slt 247 fails
+ballista listing_table_partitions.slt 252 wrong result
+
+ballista map.slt 30 #1294 view types are disabled
+ballista map.slt 92,107,716,729 table missing after an earlier failure
+ballista map.slt 191,194,197,207,210,213,225,228,232,235,259,268,277,459 #2967 runtime errors are wrapped
+ballista map.slt 708 #2963 dictionary columns come back decoded
+ballista map.slt 733,741,749,758,766,775,783,848,899,951,1031,1040,1049,1060,1069,1087,1094,1100 fails
+ballista map.slt 1169,1204,1247 wrong result
+
+ballista math.slt 481,484,487,490,493,496,499,502,505,508,511,514,517,520,523,526,558,562,566,570,599,602,605,608,611,614,617,620,623,626,629,632,635,638,641,644,843,846,886,889,973,977,981,1047,1050,1054,1095,1099,1103,1107,1111,1115,1199,1203 #2967 runtime errors are wrapped
+ballista math.slt 530 fails
+ballista math.slt 699,850 wrong result
+ballista math.slt 1313,1319,1364 #2964 Float16 comes back as Float32
+
+ballista merge_into.slt 138 fails with a different error
+ballista merge_into.slt 293,298,303,308,313,319,327,335,345,350,356,364,372,383,391 logical plan can't be serialized
+
+ballista metadata.slt 14,21,30,37,46,65,71,77,80,87,92,102,115,134,146,160,202,220,228,238,249,260,266,275,288,301,315,336,343,350,359,374,383,396,411,417,428,439,450,456,462,468,474,480,486,494,498,502,506,510,517,526,535,544,553,562,572,579,585,595,613,620,626,638,647,654,660,666,673,680,690,696 #2960 tables registered before Ballista starts are dropped
+ballista metadata.slt 591 fails
+
+ballista negative_zero.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista negative_zero.slt 41 #2963 dictionary columns come back decoded
+ballista negative_zero.slt 51,69,78,86 table missing after an earlier failure
+ballista negative_zero.slt 349 fails
+
+ballista null_aware_anti_join.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista-aqe null_aware_anti_join.slt 390,755,761,909,918,946 #2953 multi-key null-aware anti join
+ballista-aqe null_aware_anti_join.slt 668 batches don't match the plan's schema
+
+ballista null_aware_mark_join.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista-aqe null_aware_mark_join.slt 133,147,160,172,183,517,696,702,711,819,828,862,872 #2953 multi-key null-aware anti join
+
+ballista-static null_aware_memory_limit.slt 38 doesn't fail
+ballista-aqe null_aware_memory_limit.slt 28,38 #2953 multi-key null-aware anti join
+
+ballista-aqe null_aware_multi_column.slt skip #2955 stalls on the adaptive planner
+
+ballista-aqe null_aware_scope_groups.slt 54,64,75,82 #2953 multi-key null-aware anti join
+
+ballista nullif.slt 178,186,194 #2963 dictionary columns come back decoded
+
+ballista nvl.slt 130 #2967 runtime errors are wrapped
+
+ballista-static order.slt 2104,2403 fails
+ballista-aqe order.slt skip #2955 stalls on the adaptive planner
+
+ballista-aqe order_by_all.slt 29 #2942 sanity check after DistributedExchangeRule
+
+ballista ordered_aggregate_key_types.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista ordered_aggregate_spill.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista ordered_aggregate_spill.slt 61 doesn't fail
+
+ballista parquet.slt 139,149,282,291,306,315,330,339,417 wrong result
+ballista parquet.slt 464 #1294 view types are disabled
+ballista parquet.slt 1002,1007,1012,1017 #2963 dictionary columns come back decoded
+
+ballista parquet_filter_pushdown.slt 1020 #2963 dictionary columns come back decoded
+
+ballista parquet_max_row_group_bytes.slt 66 doesn't fail
+
+ballista parquet_metadata_functions.slt 22,48,59 fails
+
+ballista parquet_missing_bounds.slt 10,19,24 #2960 tables registered before Ballista starts are dropped
+
+ballista parquet_nested_schema_pruning.slt 196 #2967 runtime errors are wrapped
+
+ballista parquet_rle_to_dictionary.slt 36,65,74,81,130,147,271,301 #2963 dictionary columns come back decoded
+
+ballista parquet_statistics.slt 311,314 #2967 runtime errors are wrapped
+
+ballista-aqe pg_compat/pg_compat_union.slt 208 #2942 sanity check after DistributedExchangeRule
+
+ballista-static pg_compat/pg_compat_window.slt 1029 #2957 window input loses its ordering
+ballista-aqe pg_compat/pg_compat_window.slt 795 wrong result
+
+ballista-static piecewise_merge_join_matrix.slt 204,224,956,961 #2963 dictionary columns come back decoded
+ballista-static piecewise_merge_join_matrix.slt 296,305 fails
+ballista-static piecewise_merge_join_matrix.slt 965,970,977 table missing after an earlier failure
+ballista-aqe piecewise_merge_join_matrix.slt skip #2955 stalls on the adaptive planner
+
+ballista-static piecewise_merge_join_nested_nulls.slt 68,108,148,188,238,278,318,358,408,448,488,528 #2958 union branch can't be restricted
+ballista-static piecewise_merge_join_nested_nulls.slt 74,114,154,194,244,284,324,364,414,454,494,534 table missing after an earlier failure
+
+ballista-static predicates.slt 952,955 #2967 runtime errors are wrapped
+ballista-aqe predicates.slt skip #2955 stalls on the adaptive planner
+
+ballista prepare.slt 608 fails
+
+ballista preserve_file_partitioning.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista preserve_file_partitioning.slt 922 wrong result
+ballista-aqe preserve_file_partitioning.slt 312 wrong result
+
+ballista projection_pushdown.slt 2126,2134,2185,2194,2200,2210,2216,2226 #2959 session functions are dropped
+
+ballista push_down_filter_parquet.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista-aqe push_down_filter_parquet.slt 1556 wrong result
+
+ballista push_down_filter_regression.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista push_down_filter_regression.slt 700,705,710,715 #2959 session functions are dropped
+ballista push_down_filter_regression.slt 763 #2957 window input loses its ordering
+
+ballista-aqe push_down_topk_through_join.slt 139,258,821,902,936,970,1006,1040,1076,1108,1236,1310 wrong result
+ballista-aqe push_down_topk_through_join.slt 186 batches don't match the plan's schema
+
+ballista pwmj.slt 1301,1306,1682,1686 #2963 dictionary columns come back decoded
+ballista pwmj.slt 1310,1316,1321,1329,1335,1366,1692,1697,2058,2063,2073,2078 table missing after an earlier failure
+
+ballista range_partitioning.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista range_partitioning.slt 50,84,110,210,245,278,335,363,387,454,501,515,552,586,620,655,695,741,784,818,850,878,909,945,981,1016,1052,1069,1104,1139,1177,1210,1240,1273,1307,1349,1397,1426,1455,1485,1517,1550,1585,1624,1665,1699,1776,1828,1871,1920,1934,1969 #2960 tables registered before Ballista starts are dropped
+
+ballista range_sorted_time_bin_agg.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista range_sorted_time_bin_agg.slt 85,113,145,171,197,226,256,287,316 #2960 tables registered before Ballista starts are dropped
+
+ballista regexp/regexp_count.slt 81,84,87,385,388,391,394,401 #2967 runtime errors are wrapped
+
+ballista regexp/regexp_instr.slt 75,78,81,252,255,258,261,268 #2967 runtime errors are wrapped
+
+ballista regexp/regexp_like.slt 132,135,138,409,413,416,422,425,428,451,454,457 #2967 runtime errors are wrapped
+ballista regexp/regexp_like.slt 207,278 #2963 dictionary columns come back decoded
+ballista regexp/regexp_like.slt 212,220,227,235,274,285,291 table missing after an earlier failure
+
+ballista regexp/regexp_match.slt 109,112,115,226,232,236,240,268,271 #2967 runtime errors are wrapped
+
+ballista regexp/regexp_replace.slt 123,128,146,163 #2963 dictionary columns come back decoded
+ballista regexp/regexp_replace.slt 137,143,152,160,172,181,190,199,208 table missing after an earlier failure
+ballista regexp/regexp_replace.slt 350,356,363 #2967 runtime errors are wrapped
+
+ballista repartition.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista repartition.slt 85 plan node can't be serialized
+ballista repartition.slt 122 wrong result
+
+ballista repartition_scan.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista repartition_scan.slt 105 wrong result
+
+ballista repartition_subset_satisfaction.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista scalar.slt 1040 #2967 runtime errors are wrapped
+
+ballista select.slt 50,224 #2963 dictionary columns come back decoded
+ballista select.slt 56,63,70,78,230,238,245,251,257,263,269,275,283,291,297,303,309,317 table missing after an earlier failure
+ballista select.slt 484,616 wrong result
+ballista select.slt 576,579 logical plan can't be serialized
+ballista select.slt 1782,1859 #2967 runtime errors are wrapped
+ballista-aqe select.slt 564,597,644,651 #2942 sanity check after DistributedExchangeRule
+
+ballista set_variable.slt 338 doesn't fail
+
+ballista sort_merge_join.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista sort_merge_join.slt 1094,1101 #2963 dictionary columns come back decoded
+ballista sort_merge_join.slt 1108,1113,1118,1123,1126 table missing after an earlier failure
+ballista-aqe sort_merge_join.slt 424,532 #2942 sanity check after DistributedExchangeRule
+ballista-aqe sort_merge_join.slt 907,914 wrong result
+
+ballista sort_merge_join_batches.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista sort_merge_join_spill.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista-static sort_pushdown.slt 10,31,49,66,87,104 table missing after an earlier failure
+ballista-aqe sort_pushdown.slt skip #2955 stalls on the adaptive planner
+
+ballista spark/aggregate/collect.slt 5,10,15,20,25,34,44,49,54,59,64,73,83,93,103 #2959 session functions are dropped
+
+ballista spark/aggregate/collect_window.slt 22,34,46,58,70,82,94,106,126,138,154,172,194,213,232,260,272,284,300,317,332,344 #2959 session functions are dropped
+
+ballista spark/aggregate/try_sum.slt 5,10,15,20,25,30,35,42,47,52,57,72,86,92,97,102,107,113,118 #2959 session functions are dropped
+
+ballista spark/array/array.slt 5,11,17,22,28,34,45,51,56,61,66,71 #2959 session functions are dropped
+
+ballista spark/array/array_contains.slt 13,19,25,31,37,49,55,61,67,73,79,97,118,124 #2959 session functions are dropped
+
+ballista spark/array/shuffle.slt 6,12,18,24,30,36,42,57,75,83,88,93,98,103,108 #2959 session functions are dropped
+
+ballista spark/array/slice.slt 5,10,15,20,25,30,35,38,41,44,49,54,59,65,90,95,100,105,118,123,128,133,138,144 #2959 session functions are dropped
+
+ballista spark/bitmap/bitmap_bit_position.slt 5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95 #2959 session functions are dropped
+
+ballista spark/bitmap/bitmap_bucket_number.slt 5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105 #2959 session functions are dropped
+
+ballista spark/bitmap/bitmap_count.slt 5,10,15,20,28,35,42,50,73,81,89 #2959 session functions are dropped
+
+ballista spark/bitwise/bit_count.slt 15,20,25,30,35,40,46,51,56,62,67,72,77,82,87,92,97,102,108,113,118,123,128,133,138,143,149,154,159,165,170,175,180,185,190,196,201,206,211,216,221,226 #2959 session functions are dropped
+
+ballista spark/bitwise/bit_get.slt 13,20,26,31,36,41,47,50,54,59,64,69,74,79,84 #2959 session functions are dropped
+
+ballista spark/bitwise/bitwise_not.slt 15,20,25,30,35,40,46,51,56,62,67,72,77,82,87,92,97,102,107,112,117,123,128,133,139,144,149,154,159,164,170,175,180,185 #2959 session functions are dropped
+
+ballista spark/bitwise/getbit.slt 13,20,26,31,36,41,47,50,54,59 #2959 session functions are dropped
+
+ballista spark/bitwise/shiftright.slt 15,20,25,31,36,41,47,52,57,63,68,73,79,84,90,95,100,105,111,116,121,126,131,137,158,173,188,203,214,225,236,241,246 #2959 session functions are dropped
+
+ballista spark/bitwise/shiftrightunsigned.slt 15,20,25,31,36,41,47,52,57,63,68,73,79,84,90,95,100,105,112,117,122,127,132,138,159,177,192,203,214,225,230,235 #2959 session functions are dropped
+
+ballista spark/collection/size.slt 15,21,27,32,38,43,49,54,60,67,73,80,86,92,98,104,113 #2959 session functions are dropped
+
+ballista spark/conditional/if.slt 14,20,26,31,40,45,51,59,64,72,77,85,90,96,102,108,116,121,127,132,137,141,144,150 #2959 session functions are dropped
+
+ballista spark/conversion/cast_float_to_timestamp.slt 8,13,18,24,29,34,40,45,51,56,61,67,72,78,83,88,94,99,108,113,140,162,204 #2959 session functions are dropped
+
+ballista spark/conversion/cast_int_to_timestamp.slt 8,13,18,24,29,35,40,46,51,57,62,67,72,78,84,89,95,100,106,126,132,142,148,157,162,171,176,204,216,228 #2959 session functions are dropped
+
+ballista spark/datetime/add_months.slt 5,10,15,21,24,30,35,40 #2959 session functions are dropped
+
+ballista spark/datetime/date_add.slt 15,20,25,30,35,40,45,51,57,62,67 #2959 session functions are dropped
+
+ballista spark/datetime/date_diff.slt 6,11,16,21,27,32,38,43,50,56,62,67,72,78,83,89,94,99,104,121,126 #2959 session functions are dropped
+
+ballista spark/datetime/date_part.slt 6,11,16,21,26,32,38,43,48,54,59,64,69,75,80,85,91,96,101,107,112,118,123,129,134,140,145,150,155,160,166,171,176,181,186,192,197,202,207,212,218,223,227,230,243,257,262,277 #2959 session functions are dropped
+
+ballista spark/datetime/date_sub.slt 15,20,25,30,35,40,46,51,57,62,67 #2959 session functions are dropped
+
+ballista spark/datetime/date_trunc.slt 95,124,145 #2959 session functions are dropped
+
+ballista spark/datetime/dateadd.slt 15,20,27,33,38,43 #2959 session functions are dropped
+
+ballista spark/datetime/from_utc_timestamp.slt 6,11,16,22,27,32,38,43,48,54,59,64,69,90,111,134,140,146,166 #2959 session functions are dropped
+
+ballista spark/datetime/hour.slt 13,19,24,30 #2959 session functions are dropped
+
+ballista spark/datetime/last_day.slt 11,17,22,27,32,37,42,47,52,57,62,67,73,78,84,90,94,98,101,104 #2959 session functions are dropped
+
+ballista spark/datetime/make_dt_interval.slt 13,20,27,33,38,43,48,54,60,65,70,75,82,87,92,97,106,112,118,124,130,135 #2959 session functions are dropped
+
+ballista spark/datetime/make_interval.slt 11,35,45,55,65,70,75,80,85 #2959 session functions are dropped
+
+ballista spark/datetime/minute.slt 13,19,24,30 #2959 session functions are dropped
+
+ballista spark/datetime/monthname.slt 6,12,17,22,27,32,37,42,47,52,57,62,67,73,79,88,93,98,104,118,124,130,136,142,147,153,157,161 #2959 session functions are dropped
+
+ballista spark/datetime/next_day.slt 11,16,21,27,32,35,38,41,44,47,50,56,61,66,71,74,92,97,104,109,114,120,125,135,147,152,158,163 #2959 session functions are dropped
+
+ballista spark/datetime/second.slt 13,19,24,30 #2959 session functions are dropped
+
+ballista spark/datetime/time_trunc.slt 6,12,17,23,29,35,40,55,58,64 #2959 session functions are dropped
+
+ballista spark/datetime/to_utc_timestamp.slt 6,11,16,22,27,32,38,43,48,54,59,64,69,90,111,134,140 #2959 session functions are dropped
+
+ballista spark/datetime/trunc.slt 6,11,16,22,28,33,38,43,49,55,60,74,79,83 #2959 session functions are dropped
+
+ballista spark/datetime/unix.slt 7,12,18,23,28,33,38,43,48,53,58,64,69,74,79,84,89,95,100,105,110,115,120,130,145,154,164,172,180 #2959 session functions are dropped
+
+ballista spark/datetime/weekday.slt 15,21,26,31,36,41,46,51,57,63,72,77,83,97,103,109,113,117 #2959 session functions are dropped
+
+ballista spark/generator/stack.slt 12,17,22,27,33,39,45,51,58,65,71,78,86,93,99,104,109,112,116,121,126,130,140,145,148,152,155,158,162,165,170,174,179,182 #2959 session functions are dropped
+
+ballista spark/hash/crc32.slt 15,20,25,31,36,41,46,51,56,61,66,71 #2959 session functions are dropped
+
+ballista spark/hash/sha.slt 15,20,25,31,37,43,49,55 #2959 session functions are dropped
+
+ballista spark/hash/sha1.slt 15,20,25,31,36,41,46,51,56,61,66 #2959 session functions are dropped
+
+ballista spark/hash/sha2.slt 5,10,15,20,25,30,35,41,47,57,67,73,79,86,92,98,106,111,116 #2959 session functions are dropped
+
+ballista spark/hash/xxhash64.slt 9,14,19,25,30,35,40,46,51,56,62,67,73,79,84,89,95,100,106,111,116,122,127,133,138,144,150,156,163,176,187,196 #2959 session functions are dropped
+
+ballista spark/json/json_tuple.slt 12,18,24,30,36,42,48,54,60,66,72,78,92,100,108,114,120,126,132,138 #2959 session functions are dropped
+
+ballista spark/map/map_from_arrays.slt 6,11,16,21,27,32,37,43,46,49,52,61,82,88,109,113,117,121,129,134,143,148,153,159,178 #2959 session functions are dropped
+
+ballista spark/map/map_from_entries.slt 6,11,16,27,38,42,45,50,83,102,111,142,152,156,160,171,182,187,193,208 #2959 session functions are dropped
+
+ballista spark/map/str_to_map.slt 12,18,24,30,36,42,48,76,82,88,94,102,110,121,126,133,139 #2959 session functions are dropped
+
+ballista spark/math/abs.slt 32,35,38,41,116,119,122,125 #2959 session functions are dropped
+
+ballista spark/math/bin.slt 5,10,15,20,25,30,35,40,45,50,55,60 #2959 session functions are dropped
+
+ballista spark/math/ceil.slt 43,49,55,61,66,71,76,107,119,131 #2959 session functions are dropped
+
+ballista spark/math/csc.slt 14,19,27 #2959 session functions are dropped
+
+ballista spark/math/expm1.slt 5,10,15,21 #2959 session functions are dropped
+
+ballista spark/math/floor.slt 10,15,20,26,31,37,42,47,52,76,98,107,116,134,152,157,164,170,212,218,224,238,245,251,256,262,268 #2959 session functions are dropped
+
+ballista spark/math/hex.slt 5,10,15,22,32,39,46,49,54,59,69 #2959 session functions are dropped
+
+ballista spark/math/hypot.slt 12,17,23,29,34,40,48,54,59,64,70,76,82,88,94,100,113,119 #2959 session functions are dropped
+
+ballista spark/math/mod.slt 13,19,24,29,34,39,44,50,55,60,66,71,77,82,87,92,97,102,108,113,118,123,128,133,139,144,150,155,160,166,172,181,184,188,192,196,201,210,215,220,225,230,236,241,247,252,257,262,267,272,277,282,287,293,298,303 #2959 session functions are dropped
+
+ballista spark/math/negative.slt 15,21,27,33,39,45,51,57,63,69,75,81,87,93,102,114,120,126,136,148,160,172,181,187,193,199,205,211,217,223,229,235,242,248,254,259,265,273,276,279,282,286,291,296,301,310 #2959 session functions are dropped
+
+ballista spark/math/pmod.slt 12,17,22,28,33,38,43,49,54,59,65,74,77,81,85,89,93,98,107,112,117,122,127,132,138,143,148,153,159,164,169,174,179,184,190,195,200,206,211,216,221,226,231,237,242,247,252,258,263,268,273,278,283,288,294,299,304,309,318,324,330,337,342,351,356,362,367,372,377,382,387,393,398,403,408,414,419,424,429 #2959 session functions are dropped
+
+ballista spark/math/rint.slt 13,19,24,30,35,40,45,50,55,60,65,70,75,80,85,90,95,101 #2959 session functions are dropped
+
+ballista spark/math/round.slt 147,153,295,300,306,312,320,325,331,337,345,350,355,361,367,372,384,390,396,404,409,415,421,468,553,559,563,567,571 #2959 session functions are dropped
+
+ballista spark/math/sec.slt 13,18,26 #2959 session functions are dropped
+
+ballista spark/math/shiftleft.slt 15,20,25,31,36,41,47,52,57,63,68,73,79,84,90,95,101,110,115,120,125,130,136,157,172,187,198,209,220,225,230 #2959 session functions are dropped
+
+ballista spark/math/unhex.slt 6,11,17,22,28,37,43,49,55,71,81 #2959 session functions are dropped
+
+ballista spark/math/width_bucket.slt 11,16,21,26,31,36,41,46,52,57,62,68,74,79,84,89,94 #2959 session functions are dropped
+
+ballista spark/misc/equal_null.slt 13,20,27,34,41,46,51,56,62,67,73,78,83,89,94,100,105,118,137,148,154,159,164,169,174,177,184,195 #2959 session functions are dropped
+
+ballista spark/predicate/ilike.slt 13,18,23,28,33,38,43,48,53,58 #2959 session functions are dropped
+
+ballista spark/predicate/like.slt 13,18,23,28,33,38,43,48,53,58,63,68 #2959 session functions are dropped
+
+ballista spark/string/ascii.slt 25 #2959 session functions are dropped
+
+ballista spark/string/base64.slt 5,10,15,20,25,30,35,48,52,57,62,67,72,77,82,95,98,101 #2959 session functions are dropped
+
+ballista spark/string/char.slt 5,10,15,20 #2959 session functions are dropped
+
+ballista spark/string/concat.slt 17,27 #2959 session functions are dropped
+ballista-aqe spark/string/concat.slt 38 #2959 session functions are dropped
+
+ballista spark/string/concat_ws.slt 38,43,63,69,75,81,95,102,108,131,166,172,178,184,228,276,282,288,300,326,332,338,364,370,376,382 #2959 session functions are dropped
+
+ballista spark/string/elt.slt 13,20,25,30,35,40,45,55,61,67,73,79,85,91,97,113,135,140,146,152,158,162,166,170,180 #2959 session functions are dropped
+
+ballista spark/string/encode.slt 6,12,18,24,30,36,42,48,54,60,66,72,78,83,88,93,98,103,108,114,121,126,131,138,144,150,158,164,171,182 #2959 session functions are dropped
+
+ballista spark/string/format_string.slt 16,21,26,32,38,44,54,60,66,72,78,84,90,96,102,112,117,123,129,135,141,146,152,157,163,169,175,181,187,193,199,205,211,217,223,229,239,245,251,265,271,277,283,289,299,305,311,317,323,329,347,353,359,365,371,377,383,389,395,401,407,413,419,425,431,437,444,450,456,462,468,474,480,486,492,498,504,510,516,522,528,534,540,546,552,558,564,570,595,601,607,613,619,625,631,637,643,649,655,661,667,673,679,685,691,697,710,716,724,730,740,745,750,755,761,767,774,780,786,792,798,804,810,816,822,828,834,840,846,852,858,864,870,876,882,888,900,906,912,918,924,930,936,942,948,954,960,966,972,978,984,990,996,1002,1008,1014,1020,1026,1032,1038,1044,1050,1056,1062,1068,1101,1107,1113,1126,1132,1138,1144,1150,1166,1173,1180,1187,1194,1201,1208,1215,1222,1237,1242,1248,1253,1258,1263,1268,1273,1278,1283,1288,1293,1298,1303,1308,1313,1318,1323,1328,1333,1338,1343,1349,1354,1359,1364,1369,1374,1379,1384,1389,1394,1399,1404,1410,1415,1420,1425,1431,1436,1441,1446,1452,1457,1462,1468,1473,1478,1484,1489,1495,1500,1505,1510,1515,1520,1525,1530,1535,1541,1546,1551,1556,1561,1566,1573,1578,1584,1589,1594,1599,1604,1609,1614,1620,1625,1630,1635,1641,1646,1651,1656,1662,1667,1672,1678,1683,1688,1694,1699,1704,1710,1715,1720,1725,1731,1736,1742,1747,1752,1758,1763,1768,1773,1779,1784,1789,1794,1831,1837,1843,1848,1854,1860,1866,1872,1878,1884,1890,1896,1902,1908,1914,1920,1926,1932,1938,1944,1950,1956,1962,1968,1974,1980,1985,1991,1996,2006,2012,2025,2031,2037,2043,2049,2059,2065,2071,2077,2083,2091,2097,2105,2113,2119,2125,2131,2144,2150,2156,2162,2168,2174,2180,2186,2192,2198,2204,2210,2216,2222,2228,2234,2240,2246,2252,2258,2264,2270,2276,2282,2292,2298,2308,2314,2320,2330,2336,2346,2352,2382,2388 #2959 session functions are dropped
+
+ballista spark/string/is_valid_utf8.slt 13,22,27,32,37,42,47,52,57,62,67,72,77,82,87,92,97,102,107,112,117,122,127,132,137,142,147,152,157,162,167,172,177,182,187 #2959 session functions are dropped
+
+ballista spark/string/len.slt 5,10 #2959 session functions are dropped
+
+ballista spark/string/luhn_check.slt 5,11,17,22,27,32,37,43,49,55,61,66,71,76,81,87,92,97,102,108,114,119,124,130,136,141 #2959 session functions are dropped
+
+ballista spark/string/make_valid_utf8.slt 5,10,15,20,25,30,35,40,45,50,55,60,65,70,75 #2959 session functions are dropped
+
+ballista spark/string/printf.slt 14 #2959 session functions are dropped
+
+ballista spark/string/quote.slt 5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105,110,115,120,125,130,135,140,145,150,155,162,167,172,177,184,193,202 #2959 session functions are dropped
+
+ballista spark/string/soundex.slt 5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105,110,115,120,125,130,135,140,145,150,155,160,165,170,175,180,185,192,197,202,207,214,219,226,236 #2959 session functions are dropped
+
+ballista spark/string/space.slt 5,10,15,20,25 #2959 session functions are dropped
+
+ballista spark/string/substring.slt 332 #2959 session functions are dropped
+
+ballista spark/string/to_binary.slt 13,19,24,30,36,41,47,52,58,64,70,75,80,86,91,97,105,108,112,116 #2959 session functions are dropped
+
+ballista spark/string/try_to_binary.slt 13,20,27,33,38,44,49,55 #2959 session functions are dropped
+
+ballista spark/url/parse_url.slt 5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105,110,115,120,125,132,137,142,147,153,158,163,168,173,179,184,189,195,200,205,210,215,220,225,230,235,240,245,250,255,260,265,270,275,280,285,290,295,300,305,310,315,320,325,330,333,338,344,350,356,362,368,374 #2959 session functions are dropped
+
+ballista spark/url/try_parse_url.slt 11,16,21,26,31,36,41,46,51,56,61,66,71,76,83,88,93,98,104,109,114,119,124,130,135,140,146,151,156,161,166,171,176,181,186,191,196,201,206,211,216,221,226,231,236,241,246,251,256,261,266,271,276,281,288,294,300,306,312,318,324 #2959 session functions are dropped
+
+ballista spark/url/try_url_decode.slt 5,11,17,23,29,35,41,47,53 #2959 session functions are dropped
+
+ballista spark/url/url_decode.slt 5,11,17,23,29,35,41,47,53 #2959 session functions are dropped
+
+ballista spark/url/url_encode.slt 5,11,17 #2959 session functions are dropped
+
+ballista statistics_registry.slt 0 RESET restores DataFusion's defaults, not Ballista's
+
+ballista-aqe string/concat.slt 33 #2942 sanity check after DistributedExchangeRule
+
+ballista string/dictionary_utf8.slt 11,20,24,36,62,84,105,119 #2963 dictionary columns come back decoded
+ballista string/dictionary_utf8.slt 27,48,50,53,54,57,68,73,85,94,102,108,112,122,124,130,136,148,151,172,196,221,267,292,337,363,388,411,420,438,458,478,502,519,541,559,577,595,615,621,639,646,671,698,725,750,776,795,814,846,872,898,925,951,976,992,1008,1025,1044,1051,1079,1101,1125,1143,1161,1179,1201,1227,1248,1268,1288,1301,1306,1330,1353,1378,1402,1426,1450,1470,1493,1513,1535,1565,1595,1617,1643,1665,1691,1717,1736,1755,1774,1794,1813,1833,1849,1865,1881,1897,1913,1929,1945,1958,1974,1990,2006,2023 table missing after an earlier failure
+
+ballista string/large_string.slt 50,53 #2967 runtime errors are wrapped
+ballista string/large_string.slt 1044 wrong result
+ballista string/large_string.slt 1945,1958 #1294 view types are disabled
+
+ballista string/string.slt 50,53 #2967 runtime errors are wrapped
+ballista string/string.slt 1044 wrong result
+ballista string/string.slt 1945,1958 #1294 view types are disabled
+
+ballista string/string_literal.slt 128,131,472 #2967 runtime errors are wrapped
+ballista string/string_literal.slt 427,562,2067 #2963 dictionary columns come back decoded
+
+ballista string/string_view.slt 50,53,914 #2967 runtime errors are wrapped
+ballista string/string_view.slt 65 #2963 dictionary columns come back decoded
+ballista string/string_view.slt 85,94,108,124,144,160,176,292,319,375,401,421,754,766,945,954,964,974,984,994,1004,1075,1081,1345 table missing after an earlier failure
+ballista string/string_view.slt 1044 wrong result
+ballista string/string_view.slt 1945,1958 #1294 view types are disabled
+
+ballista string_numeric_coercion.slt 396,401 wrong result
+
+ballista struct.slt 40,445,496,501,548,575,605,618,624,1076,1217,1244 #1294 view types are disabled
+ballista struct.slt 958,976,997,1015,1036,1189,1280,1324,1351 wrong result
+ballista struct.slt 1749 fails
+ballista-aqe struct.slt 1400,1413 #2942 sanity check after DistributedExchangeRule
+
+ballista-static subquery.slt 0 RESET restores DataFusion's defaults, not Ballista's
+ballista-static subquery.slt 679,697,702,805,809,814,2194,2200,2207,2212,2219,2873,2877,3289,3293,3297,3318,3324,3330,3337,3344,3357,3360,3367,3384,3388,3669,3673,3678,3681,3685,3689,3692,3695,3699,3935,3940,3945,3949,3954,3968,3972,3977,3980,3983,4102,4106,4110,4114,4118,4122,4127,4132,4137,4143 logical plan can't be serialized
+ballista-static subquery.slt 2514,2518,2522,2606,2849,3987 doesn't fail
+ballista-static subquery.slt 2526,2903 wrong result
+ballista-static subquery.slt 2629,2685,2691,2736,2794,2801,4353,4361 fails
+ballista-aqe subquery.slt skip #2955 stalls on the adaptive planner
+
+ballista-aqe subquery_projection.slt skip #2955 stalls on the adaptive planner
+
+ballista table_functions.slt 445,775 fails
+
+ballista to_timestamp_timezone.slt 194,210,216,222 #2965 session time zone isn't applied on executors
+
+ballista topk.slt 212 #2963 dictionary columns come back decoded
+ballista topk.slt 215 table missing after an earlier failure
+
+ballista type_coercion.slt 55 #2963 dictionary columns come back decoded
+ballista type_coercion.slt 58,63 table missing after an earlier failure
+
+ballista-static union.slt 841,847 fails
+ballista-aqe union.slt skip #2955 stalls on the adaptive planner
+
+ballista-aqe union_by_name.slt 150 #2942 sanity check after DistributedExchangeRule
+ballista-aqe union_by_name.slt 243 wrong result
+
+ballista union_function.slt 12,22,25,28,31,34,37,40,43,53,56,59,66,76,85,90 table missing after an earlier failure
+
+ballista unnest.slt 881,885 logical plan can't be serialized
+
+ballista update.slt 86,89 UPDATE / DELETE on a memory table can't be serialized
+
+ballista volatile_evaluations.slt 18,23,28,35,40,47,52,60,65,72,78,85,91,98,103,110,115,123,128,138,144,150,156,164,170 #2959 session functions are dropped
+
+ballista-static window.slt 1482,1736,2255,2751,3776,3818,3830,4450,4465,4480,4496,4510,4524,4538,4553,4568,4581,4595,4612,4631,4654,4678,4743,4787,4807,4869,4903,4933,4953,5016,5033,5049,5065,5081,5096,5109,5178,5198,5218,5255,5275,5295,6447,6489 wrong result
+ballista-static window.slt 1923,4409,4429,5790,5919 fails
+ballista-static window.slt 2919,2965,3068,3229,3259,3275 plan node can't be serialized
+ballista-static window.slt 6347,6352,6357 #2967 runtime errors are wrapped
+ballista-static window.slt 7332,7405 #2963 dictionary columns come back decoded
+ballista-static window.slt 7723,7726,7730 logical plan can't be serialized
+ballista-static window.slt 7824,7900 #2957 window input loses its ordering
+ballista-aqe window.slt skip #2955 stalls on the adaptive planner
+
+ballista window_ignore_nulls_matrix.slt 13 wrong result
+
+ballista window_limits.slt 106,120,132,154 wrong result

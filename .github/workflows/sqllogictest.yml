@@ -1,0 +1,104 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs DataFusion's sqllogictest files on DataFusion and on standalone Ballista
+# with the static and the adaptive planner (ballista/sqllogictest), and fails on
+# records that fail but aren't in ballista/sqllogictest/expected_failures.txt.
+#
+# The suite takes about 40 minutes, so it isn't part of every pull request's
+# checks. It runs nightly, on demand, and on pull requests that change the
+# harness or its expected-failure list.
+
+name: sqllogictest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  pull_request:
+    paths:
+      - "ballista/sqllogictest/**"
+      - ".github/workflows/sqllogictest.yml"
+  workflow_dispatch:
+
+jobs:
+  sqllogictest:
+    name: DataFusion sqllogictest
+    # Forks have no use for the nightly run.
+    if: github.event_name != 'schedule' || github.repository == 'apache/datafusion-ballista'
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 #2.9.3
+
+      - name: Check out DataFusion's test files
+        env:
+          DATAFUSION_DIR: ${{ runner.temp }}/datafusion
+        run: |
+          set -euo pipefail
+          # The files must match the `datafusion-sqllogictest` crate the
+          # harness runs them with: the git revision `main` pins between
+          # releases, or the release tag.
+          entry=$(grep -A2 '^name = "datafusion-sqllogictest"$' Cargo.lock)
+          version=$(echo "$entry" | sed -n 's/^version = "\(.*\)"$/\1/p')
+          rev=$(echo "$entry" | sed -n 's/^source = "git+.*#\([0-9a-f]*\)"$/\1/p')
+          ref=${rev:-$version}
+          echo "DataFusion $version at $ref"
+          git init "$DATAFUSION_DIR"
+          git -C "$DATAFUSION_DIR" remote add origin https://github.com/apache/datafusion.git
+          git -C "$DATAFUSION_DIR" fetch --depth 1 origin "$ref"
+          git -C "$DATAFUSION_DIR" checkout FETCH_HEAD
+          # The files read data from these two; `datafusion-testing` isn't needed.
+          git -C "$DATAFUSION_DIR" submodule update --init --depth 1 testing parquet-testing
+
+      - name: Build
+        run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
+          cargo test --profile ci --locked -p ballista-sqllogictest --no-run
+
+      - name: Run
+        env:
+          BALLISTA_SLT_DATAFUSION_DIR: ${{ runner.temp }}/datafusion/datafusion/sqllogictest
+          REPORT: ${{ runner.temp }}/sqllogictest-report.md
+        run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
+          cargo test --profile ci --locked -p ballista-sqllogictest --test sqllogictests -- --report "$REPORT"
+
+      - name: Upload report
+        # `!cancelled()`: the report matters most when the run fails.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: sqllogictest-report
+          retention-days: 14
+          path: ${{ runner.temp }}/sqllogictest-report.md
+          if-no-files-found: ignore
