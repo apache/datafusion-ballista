@@ -276,7 +276,9 @@ re-derive them from operator requirements), and runs the same optimizer rules. T
 and Ballista operators by type and leave any other operator in place. An extension operator must declare
 what it needs from its input through `required_input_distribution`, as DataFusion re-derives
 `CoalescePartitionsExec` from that, and partition coalescing is skipped for a stage whose shuffles feed an
-operator the rule does not know.
+operator the rule does not know. A scheduler embedder can declare its own operators tolerant of a coalesced
+partition count with `AdaptiveRules::tolerates_partition_count_change`, and rebuild one that keeps
+per-partition state beside its inputs with `AdaptiveRules::with_coalesced_children`.
 
 ### How re-optimization works
 

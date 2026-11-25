@@ -19,6 +19,7 @@
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
@@ -27,13 +28,11 @@ use crate::test_utils::{
     mock_failed_task, revive_graph_and_complete_next_stage_with_executor,
 };
 use ballista_core::error::Result;
-use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use ballista_core::serde::protobuf::{
     FailedTask, JobStatus, ShuffleWritePartition, SuccessfulTask, failed_task,
     job_status, task_status,
 };
 use datafusion::execution::context::{SessionConfig, SessionContext};
-use std::sync::Arc;
 
 /// Builds an adaptive graph for a join (two concurrent leaf stages).
 async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
@@ -53,8 +52,7 @@ async fn test_join_plan(partition: usize) -> AdaptiveExecutionGraph {
         &ctx,
         &logical_plan,
         0,
-        None,
-        Arc::new(BallistaPhysicalExtensionCodec::default()),
+        SchedulerExtensions::default(),
     )
     .await
     .unwrap()
@@ -74,8 +72,7 @@ async fn test_aggregation_plan() -> AdaptiveExecutionGraph {
         &ctx,
         &plan,
         0,
-        None,
-        Arc::new(BallistaPhysicalExtensionCodec::default()),
+        SchedulerExtensions::default(),
     )
     .await
     .unwrap()
