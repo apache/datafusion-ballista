@@ -24,6 +24,7 @@ Per-release change logs for Apache DataFusion Ballista.
 ```{toctree}
 :maxdepth: 1
 
+56.0.0
 55.0.0
 54.1.0
 54.0.0
