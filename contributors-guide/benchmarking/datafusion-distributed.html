@@ -428,12 +428,12 @@ differs from Ballista, see
 <h2>What is measured<a class="headerlink" href="#what-is-measured" title="Link to this heading">#</a></h2>
 <p>DataFusion Distributed is a library, so there is no engine to install. The
 project benchmarks itself with a small server binary, <code class="docutils literal notranslate"><span class="pre">worker</span></code>, from its own
-repository (<code class="docutils literal notranslate"><span class="pre">benchmarks/remote-worker</span></code>), and so do these scripts. Every pod
-runs it. One pod is the coordinator: it takes the SQL over HTTP, plans each
-query, sends its stages to the workers and runs the last stage itself. It is
-not in the workers’ list, so it gets no tasks. The workers are found through a
-headless Kubernetes Service that the coordinator resolves every second;
-nothing registers anywhere.</p>
+repository (<code class="docutils literal notranslate"><span class="pre">datafusion/distributed-remote-worker</span></code>), and so do these scripts.
+Every pod runs it. One pod is the coordinator: it takes the SQL over HTTP,
+plans each query, sends its stages to the workers and runs the last stage
+itself. It is not in the workers’ list, so it gets no tasks. The workers are
+found through a headless Kubernetes Service that the coordinator resolves
+every second; nothing registers anywhere.</p>
 </section>
 <section id="differences-from-the-other-engines">
 <h2>Differences from the other engines<a class="headerlink" href="#differences-from-the-other-engines" title="Link to this heading">#</a></h2>
@@ -515,8 +515,8 @@ DataFusion settings apply to planning on the coordinator.</p>
 that holds the patch, and <code class="docutils literal notranslate"><span class="pre">DFD_REF</span></code> is the branch, tag or commit of
 datafusion-distributed to measure:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>benchmarks/cluster/docker/datafusion-distributed.Dockerfile<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">DFD_REF</span><span class="o">=</span>main<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-t<span class="w"> </span>&lt;registry&gt;/datafusion-distributed-bench:main<span class="w"> </span>benchmarks/cluster/datafusion-distributed
+<span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">DFD_REF</span><span class="o">=</span>v6.0.0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-t<span class="w"> </span>&lt;registry&gt;/datafusion-distributed-bench:v6.0.0<span class="w"> </span>benchmarks/cluster/datafusion-distributed
 </pre></div>
 </div>
 <p>Put the image in <code class="docutils literal notranslate"><span class="pre">cluster.toml</span></code> as <code class="docutils literal notranslate"><span class="pre">images.datafusion_distributed</span></code>, then:</p>
