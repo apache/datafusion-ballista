@@ -19,7 +19,7 @@
 
 Runs in the cluster as the runner Job that run.py creates. It talks
 to the coordinator, which runs the `worker` binary from datafusion-distributed's
-benchmarks/remote-worker crate. That binary answers two HTTP requests:
+datafusion/distributed-remote-worker crate. That binary answers two HTTP requests:
 
   GET /?sql=<statements>  runs the statements in order and executes the last one.
                           The answer is JSON with the number of rows, the time it
