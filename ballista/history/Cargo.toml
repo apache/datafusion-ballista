@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-history"
-description = "Event-log schema, writer, and reader for the Ballista history server"
+description = "Apache DataFusion Ballista - Event-log schema, writer, and reader for the history server"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

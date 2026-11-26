@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-cli"
-description = "Command Line Client for Ballista distributed query engine."
+description = "Apache DataFusion Ballista - Command Line Client"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
