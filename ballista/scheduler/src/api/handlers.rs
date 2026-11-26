@@ -685,7 +685,7 @@ pub async fn get_job_config<
         .task_manager
         .get_job_config(&job_id.clone().into())
         .await
-        .map(|e| Json(e.to_props()))
+        .map(|config| Json(dto_build::session_config_to_job_config(&config)))
         .map_err(|_| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
 }
 
