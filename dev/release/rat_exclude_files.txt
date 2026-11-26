@@ -23,13 +23,11 @@ python/requirements*.txt
 **/testdata/*
 benchmarks/queries/*
 benchmarks/data/*
-ci/*
 **/*.svg
 **/*.csv
 **/*.json
 **/*.sql
 venv/*
-testing/*
 target/*
 **/target/*
 Cargo.lock

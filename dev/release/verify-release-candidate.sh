@@ -121,12 +121,6 @@ test_source_distribution() {
   rustup component add rustfmt --toolchain stable
   cargo fmt --all -- --check
 
-  # Clone testing repositories if not cloned already
-  git clone https://github.com/apache/arrow-testing.git arrow-testing-data
-  git clone https://github.com/apache/parquet-testing.git parquet-testing-data
-  export DATAFUSION_TEST_DATA=$PWD/arrow-testing-data/data
-  export PARQUET_TEST_DATA=$PWD/parquet-testing-data/data
-
   # TODO: enable this eventually so that cargo test will check benchmark query results
 #  pushd benchmarks
 #  ./tpch-gen.sh

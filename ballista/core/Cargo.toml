@@ -54,7 +54,7 @@ datafusion-proto-common = { workspace = true }
 datasketches = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
-lru = { version = "0.19", optional = true }
+lru = { workspace = true, optional = true }
 object_store = { workspace = true, features = ["aws", "http"], optional = true }
 parking_lot = { workspace = true }
 pastey = { workspace = true }
