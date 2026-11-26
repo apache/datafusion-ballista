@@ -17,7 +17,9 @@
 
 mod common;
 
-use crate::common::state_with_config;
+use crate::common::{
+    ALLTYPES_ID_GT_4, ALLTYPES_ID_GT_4_SQL, register_alltypes, state_with_config,
+};
 use ballista::prelude::SessionConfigExt;
 use datafusion::assert_batches_eq;
 use datafusion::execution::SessionState;
@@ -29,6 +31,29 @@ fn job_name_state() -> SessionState {
         .with_information_schema(true)
         .with_ballista_job_name("Super Cool Ballista App");
     state_with_config(session_config)
+}
+
+/// A session state with the table `test` already registered on it, before the
+/// state is handed to `standalone_with_state` or `remote_with_state`.
+///
+/// Expected values come from issue 2960: the table must stay visible, as it is
+/// with `SessionContext::new_with_state` on the same state.
+async fn state_with_preregistered_table() -> SessionState {
+    let setup = SessionContext::new_with_state(state_with_config(
+        SessionConfig::new_with_ballista(),
+    ));
+    register_alltypes(&setup, "test").await;
+    setup.state()
+}
+
+/// Asserts that `ctx` still sees the table registered by
+/// [`state_with_preregistered_table`] and can query it.
+async fn assert_preregistered_table(
+    ctx: &SessionContext,
+) -> datafusion::error::Result<()> {
+    let result = ctx.sql(ALLTYPES_ID_GT_4_SQL).await?.collect().await?;
+    assert_batches_eq!(ALLTYPES_ID_GT_4, &result);
+    Ok(())
 }
 
 /// Asserts that `ctx` reports the job name of [`job_name_state`].
@@ -88,6 +113,17 @@ mod remote {
 
         assert_job_name_setting(&ctx).await
     }
+
+    #[tokio::test]
+    async fn should_keep_tables_registered_on_state() -> datafusion::error::Result<()> {
+        let (host, port) = crate::common::setup_test_cluster().await;
+        let url = format!("df://{host}:{port}");
+
+        let state = crate::state_with_preregistered_table().await;
+        let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
+
+        crate::assert_preregistered_table(&ctx).await
+    }
 }
 
 #[cfg(test)]
@@ -120,6 +156,38 @@ mod standalone {
             SessionContext::standalone_with_state(job_name_state()).await?;
 
         assert_job_name_setting(&ctx).await
+    }
+
+    #[tokio::test]
+    async fn should_keep_tables_registered_on_state() -> datafusion::error::Result<()> {
+        let state = crate::state_with_preregistered_table().await;
+        let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
+
+        crate::assert_preregistered_table(&ctx).await
+    }
+
+    /// A state whose configured default catalog is not already registered still
+    /// gets that catalog after `standalone_with_state`.
+    ///
+    /// This guards the case from issue 2960 where the default catalog does not
+    /// yet exist: `create_default_catalog_and_schema` must stay on so `build()`
+    /// creates it.
+    #[tokio::test]
+    async fn should_create_missing_default_catalog() -> datafusion::error::Result<()> {
+        let mut state = state_with_config(SessionConfig::new_with_ballista());
+        let config = state
+            .config()
+            .clone()
+            .with_default_catalog_and_schema("custom", "public");
+        *state.config_mut() = config;
+        assert!(state.catalog_list().catalog("custom").is_none());
+
+        let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
+        assert!(
+            ctx.catalog("custom").is_some(),
+            "expected the missing default catalog to be created"
+        );
+        Ok(())
     }
 
     // we testing if we can override default logical codec
