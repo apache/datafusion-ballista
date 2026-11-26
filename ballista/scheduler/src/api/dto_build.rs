@@ -41,6 +41,7 @@ use ballista_core::serde::protobuf::failed_task::FailedReason::{
 };
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedTask, OperatorMetricsSet, task_status};
+use ballista_core::utils::redact_config_props;
 use datafusion::execution::context::SessionConfig;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::displayable;
@@ -118,9 +119,12 @@ pub fn graph_to_job_response(
 }
 
 /// Flatten a session config into the sorted key/value map served by
-/// `GET /api/job/{job_id}/config`.
+/// `GET /api/job/{job_id}/config`, with the values of keys that may name a
+/// secret (such as `s3.secret_access_key`) replaced by a redaction marker.
+///
+/// The event log stores this map too, so secrets never reach it either.
 pub fn session_config_to_job_config(config: &SessionConfig) -> JobConfig {
-    config.to_props().into_iter().collect()
+    redact_config_props(config.to_props().into_iter().collect())
 }
 
 /// Build the per-stage summaries served by `GET /api/job/{job_id}/stages`.
@@ -792,5 +796,41 @@ mod tests {
     #[test]
     fn test_job_elapsed_ms_end_before_start_saturates_to_zero() {
         assert_eq!(super::job_elapsed_ms(500, 100), 0);
+    }
+
+    datafusion::common::extensions_options! {
+        struct TestStoreOptions {
+            pub secret_access_key: Option<String>, default = None
+            pub session_token: Option<String>, default = None
+            pub region: Option<String>, default = None
+        }
+    }
+
+    impl datafusion::config::ConfigExtension for TestStoreOptions {
+        const PREFIX: &'static str = "teststore";
+    }
+
+    #[test]
+    fn session_config_to_job_config_redacts_secrets() {
+        use ballista_core::utils::REDACTED;
+
+        let mut config =
+            SessionConfig::new().with_option_extension(TestStoreOptions::default());
+        config = config
+            .set_str("teststore.secret_access_key", "SERVED_SECRET")
+            .set_str("teststore.session_token", "SERVED_TOKEN")
+            .set_str("teststore.region", "us-east-1")
+            .set_str("datafusion.execution.target_partitions", "7");
+
+        let job_config = session_config_to_job_config(&config);
+
+        // macro-generated extensions list their entries without the prefix
+        assert_eq!(job_config["secret_access_key"], REDACTED);
+        assert_eq!(job_config["session_token"], REDACTED);
+        assert_eq!(job_config["region"], "us-east-1");
+        assert_eq!(job_config["datafusion.execution.target_partitions"], "7");
+        let served = serde_json::to_string(&job_config).unwrap();
+        assert!(!served.contains("SERVED_SECRET"), "{served}");
+        assert!(!served.contains("SERVED_TOKEN"), "{served}");
     }
 }

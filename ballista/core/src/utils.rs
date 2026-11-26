@@ -588,12 +588,39 @@ const SENSITIVE_KEY_PARTS: [&str; 6] = [
 /// go on. A key is sensitive if it contains `secret`, `password`, `token`,
 /// `credential`, `api_key` or `private_key`, ignoring case.
 pub fn redact_config_value<'a>(key: &str, value: &'a str) -> Cow<'a, str> {
-    let key = key.to_ascii_lowercase();
-    if SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part)) {
+    if is_sensitive_config_key(key) {
         Cow::Owned(format!("<redacted (length: {})>", value.len()))
     } else {
         Cow::Borrowed(value)
     }
+}
+
+/// Whether the value of configuration `key` may be a secret: the key contains
+/// `secret`, `password`, `token`, `credential`, `api_key` or `private_key`,
+/// ignoring case.
+pub fn is_sensitive_config_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+}
+
+/// Returns `props` as they may be served to a client: the values of sensitive
+/// keys (see [`is_sensitive_config_key`]) are replaced with [`REDACTED`].
+///
+/// Unlike log lines, served values do not carry the original value's length.
+pub fn redact_config_props<I>(props: I) -> I
+where
+    I: IntoIterator<Item = (String, String)> + FromIterator<(String, String)>,
+{
+    props
+        .into_iter()
+        .map(|(key, value)| {
+            if is_sensitive_config_key(&key) {
+                (key, REDACTED.to_string())
+            } else {
+                (key, value)
+            }
+        })
+        .collect()
 }
 
 /// Copies `pairs` for logging, with the values of sensitive keys replaced as
@@ -861,6 +888,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::{BinaryViewArray, StringViewArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use std::collections::BTreeMap;
 
     /// Strings too long to be inlined in their views, so every value lives in
     /// a data buffer.
@@ -954,6 +982,25 @@ mod tests {
         ] {
             assert_eq!(redact_config_value(key, "value"), "value", "{key}");
         }
+    }
+
+    #[test]
+    fn redacts_served_config_props_without_length() {
+        let props: BTreeMap<String, String> = [
+            ("s3.secret_access_key", "SECRET"),
+            ("s3.session_token", "TOKEN"),
+            ("s3.region", "us-east-1"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let redacted = redact_config_props(props);
+
+        assert_eq!(redacted["s3.secret_access_key"], REDACTED);
+        assert_eq!(redacted["s3.session_token"], REDACTED);
+        assert_eq!(redacted["s3.region"], "us-east-1");
+        assert_eq!(redacted.len(), 3);
     }
 
     #[test]
