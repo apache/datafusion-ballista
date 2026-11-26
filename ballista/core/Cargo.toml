@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-core"
-description = "Ballista Distributed Compute"
+description = "Apache DataFusion Ballista - Distributed Query Engine"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

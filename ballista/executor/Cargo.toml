@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-executor"
-description = "Ballista Distributed Compute - Executor"
+description = "Apache DataFusion Ballista - Distributed Query Engine - Executor"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

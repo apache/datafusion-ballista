@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-flight-sql"
-description = "Ballista Distributed Compute - Arrow Flight SQL frontend"
+description = "Apache DataFusion Ballista - Distributed Query Engine - Arrow Flight SQL Frontend"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

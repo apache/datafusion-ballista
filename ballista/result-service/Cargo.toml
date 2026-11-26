@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-result-service"
-description = "Ballista Distributed Compute - Result Service"
+description = "Apache DataFusion Ballista - Result Service"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

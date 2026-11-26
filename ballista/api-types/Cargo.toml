@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-api-types"
-description = "Wire types for the Ballista scheduler REST API"
+description = "Apache DataFusion Ballista - Wire types for the scheduler REST API"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }

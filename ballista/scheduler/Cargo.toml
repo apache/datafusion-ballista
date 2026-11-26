@@ -17,7 +17,7 @@
 
 [package]
 name = "ballista-scheduler"
-description = "Ballista Distributed Compute - Scheduler"
+description = "Apache DataFusion Ballista - Distributed Query Engine - Scheduler"
 license = { workspace = true }
 version = { workspace = true }
 homepage = { workspace = true }
