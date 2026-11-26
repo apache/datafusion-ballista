@@ -17,12 +17,13 @@
 
 use ballista::datafusion::common::Result;
 use ballista_core::client::BallistaClient;
+use ballista_core::execution_plans::poll_job_until_successful;
+use ballista_core::extension::BallistaGrpcMetadataInterceptor;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::execute_query_params::Query::SubstraitPlan;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, PartitionLocation,
-    SuccessfulJob, execute_query_result, job_status,
+    ExecuteQueryParams, PartitionLocation, execute_query_result,
 };
 use ballista_core::serde::scheduler::ShuffleLayout;
 use ballista_core::utils::{GrpcClientConfig, create_grpc_client_connection};
@@ -35,14 +36,11 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::{
     SendableRecordBatchStream, SessionState, SessionStateBuilder,
 };
-use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_substrait::serializer::serialize_bytes;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use log::{error, info};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tonic::transport::Channel;
+use std::time::Duration;
 
 /// This example demonstrates executing Substrait plans against external tables
 /// using datafusion-substrait as our frontend.
@@ -214,8 +212,6 @@ impl SubstraitSchedulerClient {
         &self,
         plan: Vec<u8>,
     ) -> Result<SendableRecordBatchStream> {
-        let query_start_time = Instant::now();
-
         let connection =
             create_grpc_client_connection(self.scheduler_url.clone(), &self.grpc_config)
                 .await
@@ -225,9 +221,12 @@ impl SubstraitSchedulerClient {
                     ))
                 })?;
 
-        let mut scheduler = SchedulerGrpcClient::new(connection)
-            .max_encoding_message_size(self.max_message_size)
-            .max_decoding_message_size(self.max_message_size);
+        let mut scheduler = SchedulerGrpcClient::with_interceptor(
+            connection,
+            BallistaGrpcMetadataInterceptor::default(),
+        )
+        .max_encoding_message_size(self.max_message_size)
+        .max_decoding_message_size(self.max_message_size);
 
         let mut request = tonic::Request::new(ExecuteQueryParams {
             session_id: self.session_id.clone(),
@@ -269,12 +268,10 @@ impl SubstraitSchedulerClient {
             )));
         }
 
-        let successful_job = Self::poll_job(
+        let successful_job = poll_job_until_successful(
             &mut scheduler,
-            query_result.job_id,
-            None,
-            0,
-            query_start_time,
+            query_result.job_id.into(),
+            Duration::from_millis(100),
         )
         .await?;
 
@@ -288,95 +285,6 @@ impl SubstraitSchedulerClient {
         .await?;
 
         Ok(Box::pin(SubstraitResultStream::new(partition_stream)))
-    }
-
-    async fn poll_job(
-        scheduler: &mut SchedulerGrpcClient<Channel>,
-        job_id: String,
-        metrics: Option<Arc<ExecutionPlanMetricsSet>>,
-        partition: usize,
-        query_start_time: Instant,
-    ) -> Result<SuccessfulJob> {
-        let mut prev_status: Option<job_status::Status> = None;
-
-        loop {
-            let GetJobStatusResult { status, .. } = scheduler
-                .get_job_status(GetJobStatusParams {
-                    job_id: job_id.clone(),
-                })
-                .await
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-                .into_inner();
-
-            let status = status.and_then(|s| s.status);
-            let wait_future = tokio::time::sleep(Duration::from_millis(100));
-            let has_status_change = prev_status != status;
-
-            match status {
-                None => {
-                    if has_status_change {
-                        info!("Job {job_id} is in initialization ...");
-                    }
-                    wait_future.await;
-                    prev_status = status;
-                }
-                Some(job_status::Status::Queued(_)) => {
-                    if has_status_change {
-                        info!("Job {job_id} is queued...");
-                    }
-                    wait_future.await;
-                    prev_status = status;
-                }
-                Some(job_status::Status::Running(_)) => {
-                    if has_status_change {
-                        info!("Job {job_id} is running...");
-                    }
-                    wait_future.await;
-                    prev_status = status;
-                }
-                Some(job_status::Status::Failed(err)) => {
-                    let msg = format!("Job {} failed: {}", job_id, err.error);
-                    error!("{msg}");
-                    break Err(DataFusionError::Execution(msg));
-                }
-                Some(job_status::Status::Successful(successful_job)) => {
-                    // Calculate job execution time (server-side execution)
-                    let job_execution_ms = successful_job
-                        .ended_at
-                        .saturating_sub(successful_job.started_at);
-                    let duration = Duration::from_millis(job_execution_ms);
-
-                    info!("Job {job_id} finished executing in {duration:?}");
-
-                    // Calculate scheduling time (server-side queue time)
-                    // This includes network latency and actual queue time
-                    let scheduling_ms = successful_job
-                        .started_at
-                        .saturating_sub(successful_job.queued_at);
-
-                    // Calculate total query time (end-to-end from client perspective)
-                    let total_elapsed = query_start_time.elapsed();
-                    let total_ms = total_elapsed.as_millis();
-
-                    // Set timing metrics if provided
-                    if let Some(ref metrics) = metrics {
-                        let metric_job_execution = MetricBuilder::new(metrics)
-                            .gauge("job_execution_time_ms", partition);
-                        metric_job_execution.set(job_execution_ms as usize);
-
-                        let metric_scheduling = MetricBuilder::new(metrics)
-                            .gauge("job_scheduling_in_ms", partition);
-                        metric_scheduling.set(scheduling_ms as usize);
-
-                        let metric_total_time = MetricBuilder::new(metrics)
-                            .gauge("total_query_time_ms", partition);
-                        metric_total_time.set(total_ms as usize);
-                    }
-
-                    break Ok(successful_job);
-                }
-            }
-        }
     }
 
     async fn fetch_partitions(
