@@ -99,15 +99,16 @@ docker build -f comet.Dockerfile \
 
 The DataFusion Distributed image builds the `worker` binary from the
 [datafusion-distributed](https://github.com/datafusion-contrib/datafusion-distributed)
-repository, at a branch, tag or commit you choose, after applying
+repository, at a branch, tag or commit you choose (by default the v6.0.0
+release), after applying
 [`datafusion-distributed/worker-memory-limit.patch`](datafusion-distributed/worker-memory-limit.patch),
 which gives each pod the memory limit a Ballista executor gets (upstream's
 worker has none). The build context is the directory of the patch:
 
 ```shell
 docker build -f benchmarks/cluster/docker/datafusion-distributed.Dockerfile \
-  --build-arg DFD_REF=main \
-  -t <registry>/datafusion-distributed-bench:main benchmarks/cluster/datafusion-distributed
+  --build-arg DFD_REF=v6.0.0 \
+  -t <registry>/datafusion-distributed-bench:v6.0.0 benchmarks/cluster/datafusion-distributed
 ```
 
 Push them, and put their names in `cluster.toml`.

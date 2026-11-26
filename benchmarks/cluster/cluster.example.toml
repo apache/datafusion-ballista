@@ -73,7 +73,7 @@ tpch_partitioned = false
 ballista = "registry.example.com/ballista-bench:main"
 spark = "registry.example.com/spark-bench:4.1.3"
 comet = "registry.example.com/comet-bench:4.1.3"
-datafusion_distributed = "registry.example.com/datafusion-distributed-bench:main"
+datafusion_distributed = "registry.example.com/datafusion-distributed-bench:v6.0.0"
 trino = "trinodb/trino:483"
 # Runs trino/run_queries.py and datafusion-distributed/run_queries.py, which need
 # only the standard library.

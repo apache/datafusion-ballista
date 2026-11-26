@@ -800,6 +800,11 @@ impl SchedulerTest {
             .await
     }
 
+    /// Removes `session_id`, as a client's `RemoveSession` call does.
+    pub async fn remove_session(&self, session_id: &str) -> Result<()> {
+        self.scheduler.remove_session_and_caches(session_id).await
+    }
+
     /// Simulates the loss of an executor. This mirrors the reaper's
     /// `remove_executor` path without waiting out the heartbeat timeout.
     pub async fn lose_executor(&self, executor_id: &str) -> Result<()> {
@@ -1493,6 +1498,22 @@ pub fn scan_with_file_groups(n: usize) -> Arc<dyn ExecutionPlan> {
         )]));
     }
     DataSourceExec::from_data_source(builder.build())
+}
+
+/// A `SortExec` on column `a` of `input` that merges it into one partition, as
+/// DataFusion plans on each branch of a `UNION ALL ... ORDER BY`.
+pub fn sorted_into_one_partition(
+    input: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    use datafusion::physical_plan::sorts::sort::SortExec;
+
+    let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+        Column::new("a", 0),
+    ))])
+    .unwrap();
+    Arc::new(SortExec::new(ordering, input))
 }
 
 /// An operator that passes its input through unchanged: its properties are the

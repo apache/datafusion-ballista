@@ -22,6 +22,7 @@ use crate::physical_optimizer::file_group_balance::BalanceAndPruneFileGroups;
 use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SubmitPlan};
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::distributed_explain::handle_explain_plan;
 use crate::state::execution_graph::{
@@ -377,7 +378,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             &ctx,
                             logical_plan,
                             queued_at,
-                            self.adaptive_rules.as_deref(),
+                            self.scheduler_extensions(),
                         )
                         .await?,
                     ) as ExecutionGraphBox
@@ -418,7 +419,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         &ctx,
                         physical_plan.clone(),
                         queued_at,
-                        self.adaptive_rules.as_deref(),
+                        self.scheduler_extensions(),
                     )?) as ExecutionGraphBox
                 } else {
                     debug!("Using static query planner for physical-plan job submission");
@@ -453,6 +454,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .insert(job_id.to_owned(), JobInfoCache::new(graph));
 
         Ok(())
+    }
+
+    /// What this scheduler adds to planning a job adaptively.
+    fn scheduler_extensions(&self) -> SchedulerExtensions {
+        SchedulerExtensions {
+            physical_codec: self.codec.physical_extension_codec_arc(),
+            adaptive_rules: self.adaptive_rules.clone(),
+        }
     }
 
     /// Submit a logical plan for distributed execution.
@@ -688,6 +697,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             })
             .map(|(_, vcores)| vcores)
             .sum()
+    }
+
+    /// Return bound-but-never-launched tasks to pending in their job graphs.
+    ///
+    /// Complements [`Self::take_task_reservations`]: after a metadata miss
+    /// the vcore budget is refunded, but the tasks themselves were already
+    /// recorded as `Running` at bind time. Without this reset they stay
+    /// stranded until the executor is lost (#2691).
+    pub(crate) async fn reset_unlaunched_tasks(
+        &self,
+        executor_id: &str,
+        tasks: &[TaskDescription],
+    ) -> usize {
+        let mut by_job: HashMap<JobId, Vec<&TaskDescription>> = HashMap::new();
+        for task in tasks {
+            by_job
+                .entry(task.key.job_id.clone())
+                .or_default()
+                .push(task);
+        }
+        let mut reset = 0;
+        for (job_id, job_tasks) in by_job {
+            let Some(graph) = self.get_active_execution_graph(&job_id) else {
+                warn!(
+                    "Fail to find job {job_id} in the active cache while resetting unlaunched tasks"
+                );
+                continue;
+            };
+            let mut graph = graph.write().await;
+            for task in job_tasks {
+                if graph.reset_unlaunched_task(task, executor_id) {
+                    reset += 1;
+                }
+            }
+        }
+        reset
     }
 
     /// Update given task statuses in the respective job and return a tuple containing:
@@ -1107,40 +1152,40 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Launch the given tasks on the specified executor.
     ///
-    /// Returns the jobs that cannot run: those the executor rejected, and
-    /// those whose task definitions could not be prepared here. Tasks of the
-    /// latter were never sent anywhere and will never report a status, so the
-    /// caller has to fail the job and refund the tasks' slots, exactly as for a
-    /// rejection. `Err` is only for the launch RPC itself failing, which says
-    /// the executor is sick, not the plan.
+    /// Returns the jobs that cannot run: those whose task definitions could not
+    /// be prepared here, each with the preparation error, and those the
+    /// executor rejected. Tasks of the former were never sent anywhere and will
+    /// never report a status, so the caller has to fail the job and refund the
+    /// tasks' slots, exactly as for a rejection. `Err` is only for the launch
+    /// RPC itself failing, which says the executor is sick, not the plan.
     pub(crate) async fn launch_multi_task(
         &self,
         executor: &ExecutorMetadata,
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
-    ) -> Result<HashSet<JobId>> {
+    ) -> Result<(HashMap<JobId, String>, HashSet<JobId>)> {
         let mut multi_tasks = vec![];
-        let mut failed_jobs = HashSet::new();
+        let mut unprepared_jobs = HashMap::new();
         for stage_tasks in tasks {
             let job_id = stage_tasks.first().map(|task| task.key.job_id.clone());
             match self.prepare_multi_task_definition(stage_tasks) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
                 Err(e) => {
                     error!("Fail to prepare task definition: {e:?}");
-                    failed_jobs.extend(job_id);
+                    unprepared_jobs.extend(job_id.map(|job_id| (job_id, e.to_string())));
                 }
             }
         }
 
-        if !multi_tasks.is_empty() {
-            failed_jobs.extend(
-                self.launcher
-                    .launch_tasks(executor, multi_tasks, executor_manager)
-                    .await?,
-            );
-        }
+        let rejected_jobs = if multi_tasks.is_empty() {
+            HashSet::new()
+        } else {
+            self.launcher
+                .launch_tasks(executor, multi_tasks, executor_manager)
+                .await?
+        };
 
-        Ok(failed_jobs)
+        Ok((unprepared_jobs, rejected_jobs))
     }
 
     #[allow(dead_code)]
@@ -1607,7 +1652,7 @@ mod tests {
             &ctx,
             &plan,
             0,
-            None,
+            SchedulerExtensions::default(),
         )
         .await?;
         graph.revive();

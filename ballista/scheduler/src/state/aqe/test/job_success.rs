@@ -18,6 +18,7 @@
 //! Job-success lifecycle tests for the adaptive execution graph.
 
 use crate::state::aqe::AdaptiveExecutionGraph;
+use crate::state::aqe::SchedulerExtensions;
 use crate::state::aqe::test::{mock_batch, mock_context};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::execution_stage::ExecutionStage;
@@ -60,7 +61,7 @@ async fn plan_job(sql: &str) -> Result<AdaptiveExecutionGraph> {
         &ctx,
         &logical_plan,
         0,
-        None,
+        SchedulerExtensions::default(),
     )
     .await
 }

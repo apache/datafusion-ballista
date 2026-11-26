@@ -30,6 +30,7 @@ use crate::config::{
     BALLISTA_SKEW_JOIN_SMALL_PARTITION_FACTOR, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig, ExecutionMode,
 };
+use crate::execution_plans::plan_algebra::PartitionSliceableResolver;
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
@@ -123,6 +124,16 @@ pub trait SessionConfigExt {
         codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> SessionConfig;
 
+    /// Sets how custom plan nodes are restricted to a task's partitions.
+    ///
+    /// Used when creating a standalone scheduler from SessionConfig. Setting
+    /// this when not in standalone mode has no effect. Configure the remote scheduler with
+    /// `SchedulerConfig::with_partition_sliceable_resolver` instead.
+    fn with_ballista_partition_sliceable_resolver(
+        self,
+        resolver: Arc<dyn PartitionSliceableResolver>,
+    ) -> SessionConfig;
+
     /// returns [LogicalExtensionCodec] if set
     /// or default ballista codec if not
     fn ballista_logical_extension_codec(&self) -> Arc<dyn LogicalExtensionCodec>;
@@ -130,6 +141,13 @@ pub trait SessionConfigExt {
     /// returns [PhysicalExtensionCodec] if set
     /// or default ballista codec if not
     fn ballista_physical_extension_codec(&self) -> Arc<dyn PhysicalExtensionCodec>;
+
+    /// Returns the resolver for restricting custom plan nodes to a task's partitions.
+    ///
+    /// Returns `None` if not set.
+    fn ballista_partition_sliceable_resolver(
+        &self,
+    ) -> Option<Arc<dyn PartitionSliceableResolver>>;
 
     /// Overrides ballista's [QueryPlanner]
     fn with_ballista_query_planner(
@@ -530,11 +548,20 @@ impl SessionConfigExt for SessionConfig {
         let extension = BallistaConfigExtensionLogicalCodec::new(codec);
         self.with_extension(Arc::new(extension))
     }
+
     fn with_ballista_physical_extension_codec(
         self,
         codec: Arc<dyn PhysicalExtensionCodec>,
     ) -> SessionConfig {
         let extension = BallistaConfigExtensionPhysicalCodec::new(codec);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn with_ballista_partition_sliceable_resolver(
+        self,
+        resolver: Arc<dyn PartitionSliceableResolver>,
+    ) -> SessionConfig {
+        let extension = BallistaConfigExtensionPartitionSliceableResolver::new(resolver);
         self.with_extension(Arc::new(extension))
     }
 
@@ -547,6 +574,13 @@ impl SessionConfigExt for SessionConfig {
         self.get_extension::<BallistaConfigExtensionPhysicalCodec>()
             .map(|c| c.codec())
             .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()))
+    }
+
+    fn ballista_partition_sliceable_resolver(
+        &self,
+    ) -> Option<Arc<dyn PartitionSliceableResolver>> {
+        self.get_extension::<BallistaConfigExtensionPartitionSliceableResolver>()
+            .map(|extension| extension.resolver())
     }
 
     fn with_ballista_query_planner(
@@ -843,8 +877,9 @@ impl SessionConfigHelperExt for SessionConfig {
             // boundaries that run as independent tasks, so when the producing
             // operator and the consuming scan land in different stages the
             // filter is never populated across the boundary and the scan blocks
-            // forever. Disable dynamic filter pushdown until Ballista can carry
-            // dynamic filters across stage boundaries.
+            // forever. Keep these local dynamic expressions disabled. Ballista's
+            // opt-in runtime-filter hub transports independent completed join
+            // summaries; it does not populate DataFusion's dynamic expressions.
             //
             // See https://github.com/apache/datafusion-ballista/issues/1375
             .set_bool("datafusion.optimizer.enable_dynamic_filter_pushdown", false)
@@ -878,6 +913,22 @@ impl BallistaConfigExtensionPhysicalCodec {
     }
     fn codec(&self) -> Arc<dyn PhysicalExtensionCodec> {
         self.codec.clone()
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding [PartitionSliceableResolver] if set
+struct BallistaConfigExtensionPartitionSliceableResolver {
+    resolver: Arc<dyn PartitionSliceableResolver>,
+}
+
+impl BallistaConfigExtensionPartitionSliceableResolver {
+    fn new(resolver: Arc<dyn PartitionSliceableResolver>) -> Self {
+        Self { resolver }
+    }
+
+    fn resolver(&self) -> Arc<dyn PartitionSliceableResolver> {
+        self.resolver.clone()
     }
 }
 

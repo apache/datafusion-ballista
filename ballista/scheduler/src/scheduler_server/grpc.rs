@@ -444,9 +444,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<RemoveSessionParams>,
     ) -> Result<Response<RemoveSessionResult>, Status> {
         let session_params = request.into_inner();
-        self.state
-            .session_manager
-            .remove_session(&session_params.session_id)
+        self.remove_session_and_caches(&session_params.session_id)
             .await
             .map_err(|e| {
                 Status::internal(format!(

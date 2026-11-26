@@ -120,7 +120,7 @@ struct Args {
     collect_distinct_counts: bool,
 
     /// Precision of the distinct-count sketches: each has 2^precision
-    /// one-byte registers.
+    /// registers.
     #[arg(long, default_value_t = ballista_core::hll::DEFAULT_PRECISION)]
     distinct_count_precision: u8,
 }

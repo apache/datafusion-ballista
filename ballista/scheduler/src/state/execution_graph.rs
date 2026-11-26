@@ -196,6 +196,29 @@ pub trait ExecutionGraph: Debug {
         executor_id: &str,
     ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)>;
 
+    /// Return a bound-but-never-launched task to pending.
+    ///
+    /// Used when `launch_tasks` cannot dispatch a batch (e.g. a transient
+    /// executor-metadata miss) so the partitions are not left stranded as
+    /// `Running` with no status updates ever arriving. See #2691.
+    ///
+    /// Only resets the slot when `task` still belongs to the current stage
+    /// attempt and the slot is `Running` on `executor_id`. Task ids restart
+    /// after a rollback, so a late reset must never touch a slot that was
+    /// re-bound in a newer attempt or launched on another executor.
+    ///
+    /// Returns `true` when the task was reset.
+    ///
+    /// The default implementation resets nothing and returns `false`, so
+    /// existing out-of-tree implementations keep compiling.
+    fn reset_unlaunched_task(
+        &mut self,
+        _task: &TaskDescription,
+        _executor_id: &str,
+    ) -> bool {
+        false
+    }
+
     /// Whether a stage that has not finished reads cache data (an external
     /// input) held on `executor_id`. The graph cannot re-run another job's
     /// output, so losing it fails the job.
@@ -355,6 +378,34 @@ pub trait ExecutionGraph: Debug {
     fn as_pipelined_mut(&mut self) -> Option<&mut PipelinedExecutionGraph> {
         None
     }
+}
+
+/// Reset a still-Running task_info slot so its partitions return to pending.
+///
+/// The reset only applies when the stage is still on the attempt `task` was
+/// bound in and the slot is `Running` on `executor_id`; see
+/// [`ExecutionGraph::reset_unlaunched_task`].
+pub(crate) fn reset_unlaunched_task_in_stages(
+    stages: &mut HashMap<usize, ExecutionStage>,
+    task: &TaskDescription,
+    executor_id: &str,
+) -> bool {
+    let key = &task.key;
+    let Some(ExecutionStage::Running(stage)) = stages.get_mut(&key.stage_id) else {
+        return false;
+    };
+    if stage.stage_attempt_num != task.stage_attempt_num {
+        return false;
+    }
+    let Some(info) = stage.task_infos.get(key.task_id) else {
+        return false;
+    };
+    match &info.task_status {
+        task_status::Status::Running(running) if running.executor_id == executor_id => {}
+        _ => return false,
+    }
+    stage.reset_task_info(key.task_id);
+    true
 }
 
 /// [ExecutionGraph] implementation which generates
@@ -1492,7 +1543,16 @@ impl ExecutionGraph for StaticExecutionGraph {
         }
     }
 
-    /// Convert unresolved stage to be resolved
+    fn reset_unlaunched_task(
+        &mut self,
+        task: &TaskDescription,
+        executor_id: &str,
+    ) -> bool {
+        reset_unlaunched_task_in_stages(&mut self.stages, task, executor_id)
+    }
+
+    /// The stages reading a lost external input are rolled back, and wait
+    /// unresolved until `resolve_external_input` provides it again.
     fn recovers_external_inputs(&self) -> bool {
         true
     }
@@ -1538,6 +1598,7 @@ impl ExecutionGraph for StaticExecutionGraph {
         })
     }
 
+    /// Convert unresolved stage to be resolved
     fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
         if let Some(ExecutionStage::UnResolved(stage)) = self.stages.get(&stage_id) {
             let resolved_stage = stage.to_resolved(self.session_config.options())?;

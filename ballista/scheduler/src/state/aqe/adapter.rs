@@ -16,16 +16,18 @@
 // under the License.
 
 use crate::planner::create_shuffle_writer_with_config;
+use crate::state::aqe::adaptive_rules::AdaptiveRules;
 use crate::state::aqe::execution_plan::{
     AdaptiveDatafusionExec, ExchangeExec, RangeRepartitionRouting,
 };
+use crate::state::aqe::optimizer_rule::coalesce_partitions::tolerates_partition_count_change;
 use crate::state::aqe::planner::AdaptiveStageInfo;
 use crate::state::aqe::skew_join::sort_mapper_outputs;
 use crate::state::execution_graph::StageOutput;
 use ballista_core::JobId;
 use ballista_core::execution_plans::sort_shuffle::ShuffleRouting;
 use ballista_core::execution_plans::{
-    OrderedRangeRepartitionExec, RangeFilterExec, RangeShuffleReaderExec,
+    CoalescePlan, OrderedRangeRepartitionExec, RangeFilterExec, RangeShuffleReaderExec,
     RangeShuffleWriterExec, ShuffleReaderExec, ShuffleWriter, ShuffleWriterExec,
     UnorderedRangeRepartitionExec,
 };
@@ -105,6 +107,9 @@ fn use_range_shuffle_writer(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BallistaAdapter {
     inputs: HashMap<usize, StageOutput>,
+    /// The scheduler embedder's rules, which rebuild operators of their own
+    /// over coalesced shuffles.
+    rules: Option<Arc<dyn AdaptiveRules>>,
 }
 
 ///
@@ -227,6 +232,10 @@ impl BallistaAdapter {
         &mut self,
         plan: Arc<dyn ExecutionPlan>,
     ) -> datafusion::error::Result<Transformed<Arc<dyn ExecutionPlan>>> {
+        if let Some(rebuilt) = self.rebuild_over_coalesced_shuffles(&plan)? {
+            return Ok(Transformed::new(rebuilt, true, TreeNodeRecursion::Jump));
+        }
+
         // A merge with a row limit on top of an exchange: build the reader
         // with the limit already set. Both merge on the same ordering, so the
         // consumer's first `n` rows come from the reader's first `n`.
@@ -248,16 +257,71 @@ impl BallistaAdapter {
         Ok(Transformed::no(plan))
     }
 
+    /// Rebuilds `plan`, an operator of the embedder's own above a coalesced
+    /// shuffle of this stage, with its [`AdaptiveRules::with_coalesced_children`],
+    /// over its children adapted as usual. `None` for any other node.
+    fn rebuild_over_coalesced_shuffles(
+        &mut self,
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Option<Arc<dyn ExecutionPlan>>> {
+        let Some(rules) = self.rules.clone() else {
+            return Ok(None);
+        };
+        if plan.is::<ExchangeExec>()
+            || tolerates_partition_count_change(plan.as_ref())
+            || !rules.tolerates_partition_count_change(plan.as_ref())
+        {
+            return Ok(None);
+        }
+        let Some(coalesce) = coalesce_of_stage_inputs(plan) else {
+            return Ok(None);
+        };
+        let children = plan
+            .children()
+            .into_iter()
+            .map(|child| {
+                Arc::clone(child)
+                    .transform_down(|node| self.transform_children(node))
+                    .map(|transformed| transformed.data)
+            })
+            .collect::<datafusion::error::Result<Vec<_>>>()?;
+        match rules.with_coalesced_children(plan, children.clone(), &coalesce) {
+            Some(rebuilt) => rebuilt.map(Some),
+            None => replace_children_if_necessary(Arc::clone(plan), children).map(Some),
+        }
+    }
+
+    /// `plan` as its stage's tasks would see it: each `ExchangeExec`, which
+    /// must already be resolved, replaced by the reader the stage would get.
+    ///
+    /// Only the readers are built. Unlike [`Self::adapt_to_ballista`], this
+    /// doesn't resolve `RangeFilterExec` bounds or attach reader bounds, so
+    /// the result is fit for checking partition counts but isn't the exact
+    /// plan the tasks run.
+    pub(crate) fn with_readers(
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        let mut adapter = BallistaAdapter::default();
+        Ok(plan.transform_down(|e| adapter.transform_children(e))?.data)
+    }
+
     /// Converts Adaptive plan to plan which ballista expects
     /// This is to be used to convert [ExchangeExec] to
     /// ShuffleWriterExec/SortShuffleWriterExec and [ShuffleReaderExec]
+    ///
+    /// `rules` are the scheduler embedder's, which rebuild operators of their
+    /// own over coalesced shuffles.
     pub fn adapt_to_ballista(
         plan: Arc<dyn ExecutionPlan>,
         job_id: &JobId,
         config: &ConfigOptions,
+        rules: Option<Arc<dyn AdaptiveRules>>,
     ) -> datafusion::error::Result<AdaptiveStageInfo> {
+        let mut adapter = BallistaAdapter {
+            rules,
+            ..Default::default()
+        };
         if let Some(root) = plan.downcast_ref::<ExchangeExec>() {
-            let mut adapter = BallistaAdapter::default();
             resolve_range_filter_cuts(root.input())?;
             let plan = root
                 .input()
@@ -287,7 +351,6 @@ impl BallistaAdapter {
                 inputs: adapter.inputs,
             })
         } else if let Some(root) = plan.downcast_ref::<AdaptiveDatafusionExec>() {
-            let mut adapter = BallistaAdapter::default();
             resolve_range_filter_cuts(root.input())?;
             let plan = root
                 .input()
@@ -315,6 +378,27 @@ impl BallistaAdapter {
             )
         }
     }
+}
+
+/// The coalesce decision on the shuffles `plan` reads in its stage, which
+/// [`CoalescePartitionsRule`](crate::state::aqe::optimizer_rule::CoalescePartitionsRule)
+/// shares across all of them, or `None` if they are read as written.
+fn coalesce_of_stage_inputs(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<CoalescePlan>> {
+    let mut coalesce = None;
+    let _ = plan.apply_children(|child| {
+        child.apply(|node| {
+            let Some(exchange) = node.downcast_ref::<ExchangeExec>() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            coalesce = exchange.coalesce();
+            Ok(if coalesce.is_some() {
+                TreeNodeRecursion::Stop
+            } else {
+                TreeNodeRecursion::Jump
+            })
+        })
+    });
+    coalesce
 }
 
 /// Hand every [`RangeShuffleReaderExec`] the value range its output

@@ -95,6 +95,7 @@ prost = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
+similar = { version = "3.2", default-features = false }
 socket2 = { version = "0.6" }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
@@ -113,7 +114,7 @@ name = "tpch_plan_stability"
 path = "tests/tpch_plan_stability/main.rs"
 
 [dev-dependencies]
-ballista-executor = { path = "../executor", version = "55.0.0", default-features = false }
+ballista-executor = { path = "../executor", version = "56.0.0", default-features = false }
 insta = { workspace = true }
 regex = "1"
 rstest = { workspace = true }

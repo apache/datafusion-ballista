@@ -1192,4 +1192,52 @@ mod supported {
 
         Ok(())
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[case::standalone_push(standalone_push_context())]
+    #[case::remote_push(remote_push_context())]
+    #[tokio::test]
+    async fn should_execute_asof_join(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let result = ctx
+            .sql(
+                "WITH asof_left (id, grp, ts) AS ( 
+                     SELECT * FROM (VALUES (1, 'A', 1), (2, 'A', 4), (3, 'A', 7), (4, 'B', 2), (5, 'B', 8), (6, 'C', 3))
+                 ), 
+                 asof_right (grp, ts, val) AS ( 
+                     SELECT * FROM (VALUES ('A', 2, 'a2'), ('A', 4, 'a4'), ('B', 6, 'b6'), ('A', 6, 'a6'), ('B', 1, 'b1'))
+                 )
+                 SELECT l.id, l.ts, r.ts AS r_ts, r.val
+                 FROM asof_left l 
+                 ASOF JOIN asof_right r
+                 MATCH_CONDITION (l.ts >= r.ts)
+                 ON l.grp = r.grp
+                 ORDER BY l.id",
+            )
+            .await?;
+        let plan = result.create_physical_plan().await?;
+        let result = collect(plan.clone(), ctx.task_ctx()).await?;
+
+        let expected = [
+            "+----+----+------+-----+",
+            "| id | ts | r_ts | val |",
+            "+----+----+------+-----+",
+            "| 1  | 1  |      |     |",
+            "| 2  | 4  | 4    | a4  |",
+            "| 3  | 7  | 6    | a6  |",
+            "| 4  | 2  | 1    | b1  |",
+            "| 5  | 8  | 6    | b6  |",
+            "| 6  | 3  |      |     |",
+            "+----+----+------+-----+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
 }
