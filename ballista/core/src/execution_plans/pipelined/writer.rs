@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use datafusion::arrow::compute::BatchCoalescer;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::JoinSet;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -38,7 +39,6 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 use log::debug;
-use tokio::task::JoinSet;
 
 use super::registry::{PartitionSink, PipelinedRegistry, ProducerOutputs};
 use crate::JobId;

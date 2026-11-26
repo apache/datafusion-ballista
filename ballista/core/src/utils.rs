@@ -27,6 +27,7 @@ use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -319,7 +320,7 @@ pub async fn write_stream_to_disk(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
 
-    let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
+    let handle = SpawnedTask::spawn_blocking(move || -> Result<u64> {
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
             error!("Failed to create partition file at {:?}: {e:?}", path_owned);
             BallistaError::IoError(e)

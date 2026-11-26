@@ -1193,6 +1193,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
+ "tracing",
  "tracing-appender",
  "tracing-subscriber",
  "uuid",

@@ -47,7 +47,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::runtime::SpawnedTask;
+use datafusion::common::runtime::{JoinSet, SpawnedTask};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_expr::PhysicalExpr;
@@ -74,7 +74,6 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::debug;
 use std::sync::{Mutex, Weak};
 use tokio::sync::oneshot;
-use tokio::task::JoinSet;
 
 use super::shuffle_writer_trait::ShuffleWriter;
 

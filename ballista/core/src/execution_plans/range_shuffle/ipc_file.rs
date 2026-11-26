@@ -52,6 +52,7 @@ use datafusion::arrow::ipc::reader::{FileReader, read_footer_length};
 use datafusion::arrow::ipc::writer::FileWriter;
 use datafusion::arrow::ipc::{Block, CompressionType, root_as_footer};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::physical_plan::{RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::{debug, error};
@@ -219,7 +220,7 @@ where
     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
 
     let handle =
-        tokio::task::spawn_blocking(move || -> Result<(u64, usize, FileLayout)> {
+        SpawnedTask::spawn_blocking(move || -> Result<(u64, usize, FileLayout)> {
             let file = File::create(&path_owned).map_err(|e| {
                 error!("Failed to create partition file at {:?}: {e:?}", path_owned);
                 BallistaError::IoError(e)
