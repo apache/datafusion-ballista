@@ -382,7 +382,19 @@ impl SessionStateExt for SessionState {
         let codec_logical = self.config().ballista_logical_extension_codec();
         let planner_override = self.config().ballista_query_planner();
 
-        let session_config = self.config().clone().upgrade_for_ballista();
+        let mut session_config = self.config().clone().upgrade_for_ballista();
+
+        // `new_from_existing` turns off `create_default_catalog_and_schema` when
+        // the default catalog already exists, but `with_config` below puts the
+        // old flag back and `build()` would then replace that catalog with an
+        // empty one, dropping the tables registered on it.
+        let has_default_catalog = self
+            .catalog_list()
+            .catalog(&self.config().options().catalog.default_catalog)
+            .is_some();
+        if has_default_catalog {
+            session_config = session_config.with_create_default_catalog_and_schema(false);
+        }
 
         let ballista_config = session_config.ballista_config();
 
