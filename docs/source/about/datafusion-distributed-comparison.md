@@ -143,44 +143,44 @@ was configured, and how to reproduce the runs. Both pages are generated from the
 Hive-partitioned (`lineitem` and `orders` by date), and both projects declared the partition columns so that they
 prune partitions. Kubernetes on AWS, with 32 workers (Ballista executors) of 8 vCPU and 64 GiB each.
 
-- **Ballista** was built from `main`. Each executor ran 8 tasks with a memory pool of 70% of its memory, and
+- **Ballista** was the 56.0.0 release. Each executor ran 8 tasks with a memory pool of 70% of its memory, and
   `target_partitions` was 256. The same image ran the staged and pipelined modes. See
   [Ballista configuration](../contributors-guide/benchmarking/ballista.md).
-- **DataFusion Distributed** was built from `main`, using the worker from its `benchmarks/remote-worker` crate.
-  Upstream's worker has an unbounded memory pool, so it was patched to give each worker a fair spill pool of 70% of
-  its memory, like Ballista's executors. A separate 8 vCPU, 32 GiB pod ran the coordinator and the final stage of
+- **DataFusion Distributed** was the 6.0.0 release, using the worker from its `datafusion/distributed-remote-worker`
+  crate. Upstream's worker has an unbounded memory pool, so it was patched to give each worker a fair spill pool of
+  70% of its memory, like Ballista's executors. A separate 8 vCPU, 32 GiB pod ran the coordinator and the final stage of
   each query. Its settings were otherwise the defaults. See
   [DataFusion Distributed configuration](../contributors-guide/benchmarking/datafusion-distributed.md).
 
 <!-- BEGIN GENERATED BENCHMARK RESULTS -->
 
-Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations including the cold first one; DataFusion Distributed at `90350275` (DataFusion 55), mean of 3 iterations after an untimed warm-up. Times in seconds; lower is better.
+Ballista 56.0.0 at `40a6197a` (DataFusion 56.0.0), mean of 2 iterations including the cold first one; DataFusion Distributed 6.0.0 at `f20232f5` (DataFusion 56), mean of 3 iterations after an untimed warm-up. Times in seconds; lower is better.
 
 |     Query | Ballista staged (s) | Ballista pipelined (s) | DataFusion Distributed (s) |
 | --------: | ------------------: | ---------------------: | -------------------------: |
-|         1 |               14.59 |                  12.19 |                       7.85 |
-|         2 |               31.83 |                  13.32 |                      21.29 |
-|         3 |               17.32 |                   7.97 |                       8.85 |
-|         4 |               11.39 |                   5.54 |                       6.10 |
-|         5 |               34.79 |                  17.39 |                      18.89 |
-|         6 |                1.90 |                   1.29 |                       1.47 |
-|         7 |               17.22 |                   8.27 |                      19.31 |
-|         8 |               16.57 |                  18.20 |                      23.87 |
-|         9 |               34.09 |                  29.99 |                      35.92 |
-|        10 |               39.89 |                  21.85 |                      19.93 |
-|        11 |                9.62 |                   3.12 |                       7.47 |
-|        12 |                7.65 |                   3.52 |                       4.40 |
-|        13 |                9.93 |                   6.44 |                       6.38 |
-|        14 |                6.83 |                   1.40 |                       2.53 |
-|        15 |               13.13 |                   6.83 |                       7.68 |
-|        16 |               12.15 |                   5.37 |                      76.41 |
-|        17 |               21.81 |                  17.80 |                      22.06 |
-|        18 |               35.10 |                  28.98 |                      34.84 |
-|        19 |                8.84 |                   7.67 |                       8.26 |
-|        20 |               14.50 |                   6.44 |                      17.77 |
-|        21 |               35.71 |                  32.09 |                      39.06 |
-|        22 |               10.16 |                   5.22 |                       5.51 |
-| **Total** |          **405.00** |             **260.90** |                 **395.83** |
+|         1 |               13.25 |                  13.95 |                       7.48 |
+|         2 |               27.08 |                  14.42 |                      20.69 |
+|         3 |               15.06 |                   7.73 |                       7.36 |
+|         4 |               10.56 |                   5.85 |                       5.33 |
+|         5 |               34.80 |                  15.23 |                      15.66 |
+|         6 |                1.35 |                   1.69 |                       2.30 |
+|         7 |               17.84 |                   7.96 |                      16.66 |
+|         8 |               18.75 |                  15.48 |                      19.85 |
+|         9 |               31.43 |                  25.76 |                      36.82 |
+|        10 |               39.45 |                  23.11 |                      19.26 |
+|        11 |                6.30 |                   3.85 |                       9.71 |
+|        12 |                8.07 |                   3.37 |                       3.71 |
+|        13 |                9.73 |                   5.77 |                       5.14 |
+|        14 |                6.57 |                   1.56 |                       1.63 |
+|        15 |               12.31 |                   7.35 |                       6.51 |
+|        16 |               13.15 |                   5.41 |                      38.97 |
+|        17 |               23.04 |                  17.55 |                      20.98 |
+|        18 |               32.93 |                  25.74 |                      30.33 |
+|        19 |                9.57 |                   7.78 |                       6.74 |
+|        20 |               14.73 |                   6.95 |                      13.85 |
+|        21 |               34.25 |                  30.70 |                      31.97 |
+|        22 |                9.20 |                   5.65 |                       5.07 |
+| **Total** |          **389.42** |             **252.88** |                 **326.04** |
 
 <!-- END GENERATED BENCHMARK RESULTS -->
 
@@ -188,9 +188,9 @@ Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations including the c
 
 <!-- BEGIN GENERATED COMPARISON FINDINGS -->
 
-- Pipelined Ballista was faster on 19 of the 22 queries and DataFusion Distributed on 3 (Q1, Q10, and Q13). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.4x.
-- The totals differ by 134.9 s, of which Q16 accounts for 71.0 s. Excluding Q16, the geometric mean favours pipelined Ballista by about 1.3x.
-- Staged Ballista took 1.55 times as long as pipelined Ballista in total.
+- Pipelined Ballista was faster on 14 of the 22 queries and DataFusion Distributed on 8 (Q1, Q3, Q4, Q10, Q13, Q15, Q19, and Q22). The geometric mean of the per-query ratios favours pipelined Ballista by about 1.2x.
+- The totals differ by 73.2 s, of which Q16 accounts for 33.6 s. Excluding Q16, the geometric mean favours pipelined Ballista by about 1.1x.
+- Staged Ballista took 1.54 times as long as pipelined Ballista in total.
 
 <!-- END GENERATED COMPARISON FINDINGS -->
 
@@ -205,11 +205,10 @@ Ballista at `d9872080` (DataFusion 55.2.0), mean of 2 iterations including the c
   the mean of 3 iterations after an untimed warm-up. The difference in protocol favours DataFusion Distributed.
   Per-query differences of less than about 10% are within run-to-run variation.
 - The setups are as close as we could make them, but not identical. DataFusion Distributed's coordinator is an extra
-  pod that runs part of each query, while Ballista's scheduler runs no query work. The two projects were also on
-  different patch releases of DataFusion.
+  pod that runs part of each query, while Ballista's scheduler runs no query work. Both projects were on DataFusion 56.
 - DataFusion Distributed's README publishes a comparison in which Ballista is slower than it by a wide margin, on a
   12-node cluster at scale factors up to 100. That comparison was last updated in July 2026 and used Ballista 53.0.0.
-  Ballista has had two releases and more than 500 commits since. Those include adaptive query execution enabled by
+  Ballista has had three releases and more than 500 commits since. Those include adaptive query execution enabled by
   default ([#2315]) and tasks that cover several partitions ([#2038]). The pipelined mode was not available then.
 - Corrections to either setup are welcome. Please open an issue.
 
