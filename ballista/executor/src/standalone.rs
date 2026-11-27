@@ -20,6 +20,7 @@
 //! This module provides functions for creating executors that run in the same
 //! process as the client, useful for testing and development purposes.
 
+use crate::executor_process::create_default_work_dir;
 use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -42,7 +43,6 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use log::info;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::Channel;
 
@@ -101,6 +101,27 @@ pub async fn new_standalone_executor_from_builder(
     codec: BallistaCodec,
     function_registry: BallistaFunctionRegistry,
 ) -> Result<()> {
+    start_standalone_executor(
+        scheduler,
+        vcores,
+        config_producer,
+        runtime_producer,
+        codec,
+        function_registry,
+    )
+    .await
+    .map(|_| ())
+}
+
+// Return the work directory and Flight address for lifecycle regression tests.
+async fn start_standalone_executor(
+    scheduler: SchedulerGrpcClient<Channel>,
+    vcores: usize,
+    config_producer: ConfigProducer,
+    runtime_producer: RuntimeProducer,
+    codec: BallistaCodec,
+    function_registry: BallistaFunctionRegistry,
+) -> Result<(String, SocketAddr)> {
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let address = listener.local_addr()?;
@@ -148,22 +169,27 @@ pub async fn new_standalone_executor_from_builder(
         ballista_protocol_version: BALLISTA_PROTOCOL_VERSION,
     };
 
-    let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
+    let (work_dir, work_dir_owner) = create_default_work_dir()?;
+    let work_dir_owner = Arc::new(work_dir_owner);
 
     info!("work_dir: {work_dir}");
 
-    let executor = Arc::new(Executor::with_default_execution_engine(
-        executor_meta,
-        &work_dir,
-        runtime_producer,
-        config_producer,
-        Arc::new(function_registry),
-        Arc::new(LoggingMetricsCollector::default()),
-        vcores,
-    ));
+    let executor = Arc::new(
+        Executor::with_default_execution_engine(
+            executor_meta,
+            &work_dir,
+            runtime_producer,
+            config_producer,
+            Arc::new(function_registry),
+            Arc::new(LoggingMetricsCollector::default()),
+            vcores,
+        )
+        .with_work_dir_owner(work_dir_owner.clone()),
+    );
 
-    let service = BallistaFlightService::new(work_dir)
-        .with_pipelined_registry(executor.pipelined_registry().clone());
+    let service = BallistaFlightService::new(work_dir.clone())
+        .with_pipelined_registry(executor.pipelined_registry().clone())
+        .with_work_dir_owner(work_dir_owner);
     let server = FlightServiceServer::new(service)
         .max_decoding_message_size(max_message_size)
         .max_encoding_message_size(max_message_size);
@@ -226,7 +252,7 @@ pub async fn new_standalone_executor_from_builder(
             crate::health::ExecutorHealth::new(),
         ));
     }
-    Ok(())
+    Ok((work_dir, address))
 }
 
 /// Creates standalone executor with most values
@@ -260,4 +286,142 @@ pub async fn new_standalone_executor(
         (&session_state).into(),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_loop::tests::MockScheduler;
+    use crate::test_util::fresh_runtime_producer;
+    use arrow_flight::Action;
+    use arrow_flight::flight_service_client::FlightServiceClient;
+    use ballista_core::config::BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY;
+    use ballista_core::execution_plans::create_shuffle_path;
+    use ballista_core::serde::encode_protobuf;
+    use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
+    use ballista_core::serde::scheduler::{
+        Action as BallistaAction, ByteRange, ShuffleFileKind, ShuffleLayout,
+    };
+    use datafusion::prelude::SessionConfig;
+    use std::path::Path;
+    use std::time::Duration;
+    use tokio_stream::wrappers::TcpListenerStream;
+
+    async fn start_mock_scheduler(mock: MockScheduler) -> SchedulerGrpcClient<Channel> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(SchedulerGrpcServer::new(mock))
+                .serve_with_incoming(TcpListenerStream::new(listener)),
+        );
+        SchedulerGrpcClient::connect(endpoint).await.unwrap()
+    }
+
+    fn test_config(policy: &str) -> ConfigProducer {
+        let mut config = SessionConfig::new_with_ballista();
+        config
+            .options_mut()
+            .set(BALLISTA_STANDALONE_TASK_SCHEDULING_POLICY, policy)
+            .unwrap();
+        Arc::new(move || config.clone())
+    }
+
+    fn assert_standalone_work_dir(policy: &str) {
+        // Standalone has no public shutdown handle: its services live on
+        // the runtime. Use a dedicated runtime to exercise that boundary.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let path = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                let scheduler = start_mock_scheduler(MockScheduler::idle()).await;
+                let (path, address) = start_standalone_executor(
+                    scheduler,
+                    1,
+                    test_config(policy),
+                    fresh_runtime_producer(),
+                    BallistaCodec::default(),
+                    BallistaFunctionRegistry::default(),
+                )
+                .await
+                .unwrap();
+
+                assert!(
+                    Path::new(&path).is_dir(),
+                    "standalone {policy} removed its work directory during startup"
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                    assert_eq!(mode & 0o777, 0o700);
+                }
+                let channel = Channel::from_shared(format!("http://{address}"))
+                    .unwrap()
+                    .connect()
+                    .await
+                    .unwrap();
+                let mut flight = FlightServiceClient::new(channel);
+                let job_id = "work-dir-test".into();
+                let file =
+                    create_shuffle_path(&path, &job_id, 1, 0, None, false).unwrap();
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, b"live partition").unwrap();
+                let action = BallistaAction::FetchPartition {
+                    job_id,
+                    stage_id: 1,
+                    partition_id: 0,
+                    host: "localhost".into(),
+                    port: address.port(),
+                    file_id: None,
+                    layout: ShuffleLayout::Passthrough,
+                    file_kind: ShuffleFileKind::Data,
+                    byte_ranges: vec![ByteRange {
+                        offset: 0,
+                        length: 4,
+                    }],
+                };
+                let mut stream = flight
+                    .do_action(Action {
+                        r#type: "IO_BLOCK_TRANSPORT".into(),
+                        body: encode_protobuf(action).unwrap().into(),
+                    })
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = stream.message().await.unwrap() {
+                    bytes.extend_from_slice(&chunk.body);
+                }
+                assert_eq!(bytes, b"live");
+                assert!(Path::new(&path).is_dir());
+                path
+            })
+            .await
+            .expect("standalone startup and Flight request timed out")
+        });
+        drop(runtime);
+        // Allow asynchronous service destruction to finish.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while Path::new(&path).exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !Path::new(&path).exists(),
+            "standalone {policy} leaked its work directory after runtime shutdown"
+        );
+    }
+
+    #[test]
+    fn standalone_pull_work_dir_lifetime() {
+        assert_standalone_work_dir("pull-staged");
+    }
+
+    #[test]
+    fn standalone_push_work_dir_lifetime() {
+        assert_standalone_work_dir("push-staged");
+    }
 }
