@@ -961,6 +961,9 @@ message ExecutorResourcePair {
 
 message RunningTask {
   string executor_id = 1;
+  // Vcores the task's finished partitions no longer need, released since its
+  // previous status. The task keeps the rest until its terminal status.
+  uint32 vcores_released = 2;
 }
 
 message FailedTask {

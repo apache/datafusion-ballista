@@ -898,7 +898,7 @@ impl RunningStage {
             .iter()
             .enumerate()
             .filter_map(|(task_id, info)| match &info.task_status {
-                task_status::Status::Running(RunningTask { executor_id }) => {
+                task_status::Status::Running(RunningTask { executor_id, .. }) => {
                     Some((task_id, self.stage_id, executor_id.clone()))
                 }
                 _ => None,
@@ -1257,7 +1257,7 @@ impl RunningStage {
         let mut reset_task_ids: HashSet<usize> = HashSet::new();
         for (task_id, task) in self.task_infos.iter_mut().enumerate() {
             let matches_exec = match &task.task_status {
-                task_status::Status::Running(RunningTask { executor_id })
+                task_status::Status::Running(RunningTask { executor_id, .. })
                 | task_status::Status::Successful(SuccessfulTask {
                     executor_id, ..
                 }) => executor == executor_id,
@@ -1836,6 +1836,7 @@ mod tests {
             finish_time: 0,
             task_status: task_status::Status::Running(RunningTask {
                 executor_id: executor.to_string(),
+                vcores_released: 0,
             }),
             global_input_partition_ids: partitions,
             vcores_consumed,
