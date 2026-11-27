@@ -32,6 +32,7 @@ use std::fs::File;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio_util::io::ReaderStream;
 
 use arrow_flight::encode::{DictionaryHandling, FlightDataEncoderBuilder};
@@ -83,8 +84,14 @@ impl BallistaFlightService {
             backend: LocalDiskBackend {
                 work_dir,
                 pipelined_registry: None,
+                _work_dir_owner: None,
             },
         }
+    }
+
+    pub(crate) fn with_work_dir_owner(mut self, owner: Arc<TempDir>) -> Self {
+        self.backend._work_dir_owner = Some(owner);
+        self
     }
 
     /// Also serves the output partitions of the pipelined tasks running on
@@ -108,6 +115,8 @@ const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 struct LocalDiskBackend {
     work_dir: String,
     pipelined_registry: Option<Arc<PipelinedRegistry>>,
+    // Keep standalone work directories alive while the service exists.
+    _work_dir_owner: Option<Arc<TempDir>>,
 }
 
 #[tonic::async_trait]

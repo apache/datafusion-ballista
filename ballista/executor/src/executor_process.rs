@@ -616,9 +616,14 @@ pub async fn start_executor_process_with_memory_metrics(
     start_executor_process_inner(opt, Some(memory_metrics)).await
 }
 
-fn create_default_work_dir() -> ballista_core::error::Result<(String, TempDir)> {
-    let temp_dir = TempDir::new()?;
+pub(crate) fn create_default_work_dir() -> ballista_core::error::Result<(String, TempDir)>
+{
+    prepare_default_work_dir(TempDir::new()?)
+}
 
+fn prepare_default_work_dir(
+    temp_dir: TempDir,
+) -> ballista_core::error::Result<(String, TempDir)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -628,13 +633,14 @@ fn create_default_work_dir() -> ballista_core::error::Result<(String, TempDir)> 
         )?;
     }
 
-    let path = temp_dir
-        .path()
-        .to_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| BallistaError::Configuration("Unable to bind work dir".into()))?;
-
+    let path = work_dir_path(temp_dir.path())?;
     Ok((path, temp_dir))
+}
+
+fn work_dir_path(path: &Path) -> ballista_core::error::Result<String> {
+    path.to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| BallistaError::Configuration("Unable to bind work dir".into()))
 }
 
 async fn start_executor_process_inner(
@@ -1494,6 +1500,41 @@ mod tests {
 
         drop(owner);
         assert!(!Path::new(&path).exists());
+    }
+
+    // Check the conversion independently of filesystem encoding restrictions
+    // (APFS, for example, rejects invalid UTF-8 filenames at creation).
+    #[cfg(unix)]
+    #[test]
+    fn work_dir_path_rejects_non_utf8() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(vec![0xff]));
+        assert!(matches!(
+            super::work_dir_path(&path),
+            Err(ballista_core::error::BallistaError::Configuration(_))
+        ));
+    }
+
+    // Exercise real directory cleanup on Linux, which supports this fixture.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_work_dir_rejects_non_utf8_and_cleans_up() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let parent = TempDir::new().unwrap();
+        let non_utf8 = parent.path().join(OsString::from_vec(vec![0xff]));
+        std::fs::create_dir(&non_utf8).unwrap();
+        let owner = TempDir::new_in(non_utf8).unwrap();
+        let path = owner.path().to_owned();
+
+        assert!(matches!(
+            super::prepare_default_work_dir(owner),
+            Err(ballista_core::error::BallistaError::Configuration(_))
+        ));
+        assert!(!path.exists());
     }
 
     #[test]
