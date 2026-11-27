@@ -31,6 +31,7 @@ use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
+use ballista_core::test_utils::logical_plan_hook::CountRuns;
 use ballista_core::utils::{
     GrpcClientConfig, create_grpc_client_connection, default_config_producer,
     default_session_builder,
@@ -56,6 +57,12 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Boots a scheduler serving Flight SQL plus one executor, and returns the
 /// scheduler's URL.
 async fn start_cluster() -> Result<String> {
+    start_cluster_with_config(default_config_producer()).await
+}
+
+/// Boots a scheduler serving Flight SQL, whose sessions start from
+/// `session_config`, plus one executor, and returns the scheduler's URL.
+async fn start_cluster_with_config(session_config: SessionConfig) -> Result<String> {
     let config = SchedulerConfig::default()
         .with_scheduler_policy(TaskSchedulingPolicy::PullStaged)
         .with_flight_sql(true);
@@ -63,7 +70,7 @@ async fn start_cluster() -> Result<String> {
     let cluster = BallistaCluster::new_memory(
         "localhost:50050",
         Arc::new(default_session_builder),
-        Arc::new(default_config_producer),
+        Arc::new(move || session_config.clone()),
     );
 
     let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -152,6 +159,16 @@ async fn connect_with_retry(url: &str) -> Result<SchedulerGrpcClient<Channel>> {
     Err(BallistaError::General(format!("scheduler at {url} did not come up")).into())
 }
 
+/// Connects a Flight SQL client to the scheduler at `url` and authenticates.
+async fn connect(url: &str) -> Result<FlightSqlServiceClient<Channel>> {
+    let channel =
+        create_grpc_client_connection(url.to_string(), &GrpcClientConfig::default())
+            .await?;
+    let mut client = FlightSqlServiceClient::new(channel);
+    client.handshake("anonymous", "").await?;
+    Ok(client)
+}
+
 /// Connects a Flight SQL client, authenticates, and registers a `people` table
 /// for it to query.
 ///
@@ -160,11 +177,7 @@ async fn connect_with_retry(url: &str) -> Result<SchedulerGrpcClient<Channel>> {
 async fn client_with_people(
     url: &str,
 ) -> Result<(FlightSqlServiceClient<Channel>, tempfile::TempDir)> {
-    let channel =
-        create_grpc_client_connection(url.to_string(), &GrpcClientConfig::default())
-            .await?;
-    let mut client = FlightSqlServiceClient::new(channel);
-    client.handshake("anonymous", "").await?;
+    let mut client = connect(url).await?;
 
     let csv = tempfile::tempdir()?;
     let path = csv.path().join("data.csv");
@@ -329,6 +342,28 @@ async fn flight_sql_supports_prepared_statements() -> Result {
     let batches = collect(&mut client, info).await?;
     assert_eq!(row_count(&batches), 3);
 
+    prepared.close().await?;
+
+    Ok(())
+}
+
+/// A prepared statement is planned once, but the scheduler runs its logical
+/// plan hooks each time it's executed. Preparing it and the DDL before it run
+/// none.
+#[tokio::test]
+async fn flight_sql_runs_logical_plan_hooks_on_each_execution() -> Result {
+    let config = default_config_producer()
+        .with_ballista_logical_plan_hook(Arc::new(CountRuns::default()));
+    let url = start_cluster_with_config(config).await?;
+    let mut client = connect(&url).await?;
+
+    let mut prepared = client.prepare("SELECT 0 AS run".to_string(), None).await?;
+    for run in ["| 1   |", "| 2   |"] {
+        let info = prepared.execute().await?;
+        let batches = collect(&mut client, info).await?;
+        let expected = format!("+-----+\n| run |\n+-----+\n{run}\n+-----+");
+        assert_eq!(pretty_format_batches(&batches)?.to_string(), expected);
+    }
     prepared.close().await?;
 
     Ok(())

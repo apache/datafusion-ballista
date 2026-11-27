@@ -88,6 +88,7 @@ pub mod hll;
 pub mod ids;
 /// KLL quantile sketch (Karnin-Lang-Liberty), generic over `Ord` items.
 pub mod kll;
+pub mod logical_plan_hook;
 #[cfg(feature = "build-binary")]
 /// Object store configuration and utilities for distributed file access.
 pub mod object_store;

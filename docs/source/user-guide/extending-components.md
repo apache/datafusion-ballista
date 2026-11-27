@@ -30,6 +30,7 @@ new configuration extensions, object stores, logical and physical codecs ...
 - `logical codec` - overrides `LogicalCodec`
 - `physical codec` - overrides `PhysicalCodec`
 - `partition sliceable resolver` - lets the scheduler restrict `ExecutionPlan` nodes of your own to the partitions of a task, see [Custom Physical Plan Nodes](#custom-physical-plan-nodes)
+- `logical plan hook` - rewrites a query's logical plan each time it's submitted, see [Rewriting the Logical Plan When a Query Runs](#rewriting-the-logical-plan-when-a-query-runs)
 
 Ballista executor can be configured using `ExecutorProcessConfig` which supports overriding `function registry`,`runtime producer`, `config producer`, `logical codec`, `physical codec`.
 
@@ -63,6 +64,61 @@ name, so only the first codec can encode a function. DataFusion's
 `ComposedPhysicalExtensionCodec` also doesn't route custom physical expressions,
 window functions or higher-order functions to its codecs. Table scans, such as
 Iceberg's, need neither.
+
+## Rewriting the Logical Plan When a Query Runs
+
+Some decisions belong to each run of a query rather than to its planning, such
+as which version of a table to read. DataFusion makes that one in
+`TableProvider::scan`, but Ballista physically plans a job on the scheduler,
+possibly more than once, and a client never calls `scan`. A
+`LogicalPlanHook` from `ballista_core::logical_plan_hook` is the place for it:
+
+```rust
+#[derive(Debug)]
+struct PinTables;
+
+#[async_trait]
+impl LogicalPlanHook for PinTables {
+    async fn before_submit(
+        &self,
+        plan: LogicalPlan,
+        _session: &dyn Session,
+    ) -> Result<LogicalPlan> {
+        // For example, swap each scan of a catalog-backed table for the
+        // version its catalog serves now.
+        Ok(plan)
+    }
+}
+
+let config = SessionConfig::new_with_ballista()
+    .with_ballista_logical_plan_hook(Arc::new(PinTables));
+```
+
+A hook runs once each time a query is submitted, on the node that planned it,
+before the plan is encoded or physically planned. A reused `DataFrame` or Flight
+SQL prepared statement runs it again on every run. Hooks run in the order they
+were added.
+
+- For a client, add the hook to the configuration of the session state the
+  context is built from. It runs in the client's query planner, after
+  DataFusion has optimized the plan.
+- For Flight SQL clients, whose queries the scheduler plans, add the hook to the
+  scheduler's sessions with `SchedulerConfig::with_override_config_producer`
+  or `with_override_session_builder`. It runs before the scheduler optimizes
+  the plan. A plan sent by a client isn't hooked again on the scheduler.
+
+A hook must return a plan with the same schema. A client's plan is already
+optimized, so a `TableScan` may hold pushed-down filters, a projection and a
+limit, and a filter its source accepted as `Exact` isn't applied anywhere else.
+A hook that swaps a scan's source must use one that applies them the same way,
+or the query returns wrong rows. An error from a hook fails the query with that
+error.
+
+Hooks don't run for plans the client or the scheduler runs itself, such as
+`SHOW`, DDL or a query of `information_schema` alone, for a session whose query
+planner is replaced with `with_ballista_query_planner` (unless that planner
+delegates to `BallistaQueryPlanner`), or for a physical plan submitted with
+`execute_physical_plan`.
 
 ## Example: Custom Object Store Integration
 

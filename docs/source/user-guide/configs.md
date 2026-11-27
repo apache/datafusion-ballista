@@ -72,9 +72,27 @@ fn with_ballista_query_planner(
     self,
     planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
 ) -> SessionConfig;
+
+/// Adds a hook that rewrites each query's logical plan when it's submitted,
+/// after the hooks already added. See [LogicalPlanHook].
+fn with_ballista_logical_plan_hook(
+    self,
+    hook: Arc<dyn LogicalPlanHook>,
+) -> SessionConfig;
 ```
 
 which could be used to change default ballista behavior.
+
+A `LogicalPlanHook` runs once each time a query is submitted, on the node that
+planned it: the client, or the scheduler for a Flight SQL client. A reused
+`DataFrame` or prepared statement runs it again on every run, so it is where an
+integration decides what should be decided when a query runs rather than when
+it's planned, such as which version of a table to read. To run hooks for Flight
+SQL clients, add them to the scheduler's session config.
+
+See
+[Rewriting the Logical Plan When a Query Runs](extending-components.md#rewriting-the-logical-plan-when-a-query-runs)
+for how to write one and where hooks don't run.
 
 If information schema is enabled all configuration parameters could be retrieved or set using SQL;
 

@@ -31,6 +31,7 @@ use crate::config::{
     BallistaConfig, ExecutionMode,
 };
 use crate::execution_plans::plan_algebra::PartitionSliceableResolver;
+use crate::logical_plan_hook::LogicalPlanHook;
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
@@ -159,6 +160,17 @@ pub trait SessionConfigExt {
     fn ballista_query_planner(
         &self,
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
+
+    /// Adds a hook that rewrites each query's logical plan when it's submitted,
+    /// after the hooks already added. See [LogicalPlanHook].
+    fn with_ballista_logical_plan_hook(
+        self,
+        hook: Arc<dyn LogicalPlanHook>,
+    ) -> SessionConfig;
+
+    /// Returns the hooks that rewrite each query's logical plan when it's
+    /// submitted, in the order they run.
+    fn ballista_logical_plan_hooks(&self) -> Vec<Arc<dyn LogicalPlanHook>>;
 
     /// Returns parallelism of standalone cluster
     fn ballista_standalone_parallelism(&self) -> usize;
@@ -598,6 +610,21 @@ impl SessionConfigExt for SessionConfig {
             .map(|c| c.planner())
     }
 
+    fn with_ballista_logical_plan_hook(
+        self,
+        hook: Arc<dyn LogicalPlanHook>,
+    ) -> SessionConfig {
+        let mut hooks = self.ballista_logical_plan_hooks();
+        hooks.push(hook);
+        self.with_extension(Arc::new(BallistaLogicalPlanHooks(hooks)))
+    }
+
+    fn ballista_logical_plan_hooks(&self) -> Vec<Arc<dyn LogicalPlanHook>> {
+        self.get_extension::<BallistaLogicalPlanHooks>()
+            .map(|hooks| hooks.0.clone())
+            .unwrap_or_default()
+    }
+
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {
         let extension = BallistaGrpcMetadataInterceptor::new(metadata);
         self.with_extension(Arc::new(extension))
@@ -946,6 +973,10 @@ impl BallistaQueryPlannerExtension {
         self.planner.clone()
     }
 }
+
+/// The hooks that rewrite each query's logical plan when it's submitted, in the
+/// order they run.
+struct BallistaLogicalPlanHooks(Vec<Arc<dyn LogicalPlanHook>>);
 
 /// Wrapper allowing additional metadata keys to be decorated to the scheduler
 /// gRPC request
