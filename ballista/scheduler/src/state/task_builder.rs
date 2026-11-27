@@ -48,7 +48,7 @@ use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfig, FileScanConfigBuilder,
 };
-use datafusion::datasource::source::DataSourceExec;
+use datafusion::datasource::source::{DataSource, DataSourceExec};
 use datafusion::error::Result;
 use datafusion::physical_expr::{Distribution, RangePartitioning};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -523,11 +523,24 @@ fn select_output_partitions(
                 .iter()
                 .filter_map(|&i| config.partitions().get(i).cloned())
                 .collect();
+            // try_new resets fetch, show_sizes and the sort orderings. A
+            // LIMIT absorbed into the scan's fetch would then never reach
+            // the executor, and the task returns every row. Orderings are
+            // stored projected, so only an unprojected scan can take them
+            // back without projecting them a second time.
             let restricted = MemorySourceConfig::try_new(
                 &kept,
                 config.original_schema(),
                 config.projection().clone(),
-            )?;
+            )?
+            .with_limit(config.fetch())
+            .with_show_sizes(config.show_sizes());
+            let restricted = if config.projection().is_none() {
+                restricted
+                    .try_with_sort_information(config.sort_information().to_vec())?
+            } else {
+                restricted
+            };
             return Ok(Some(DataSourceExec::from_data_source(restricted)));
         }
         // Any other source is left to the walker, which refuses a task that runs
@@ -1324,6 +1337,57 @@ mod tests {
             .map(|(name, _, splits)| (*name, *splits))
             .collect();
         assert_eq!(actual, expected);
+    }
+
+    // --- Memory scan restriction ---
+
+    /// A memory scan keeps its LIMIT through restriction: `fetch` is the
+    /// query's only limit enforcement once the optimizer absorbs it into the
+    /// scan, so dropping it returns every row (issue #2961). `show_sizes`
+    /// and the sort orderings travel with the scan too. Orderings are
+    /// stored projected, so a projected scan can't re-apply them without
+    /// mapping them a second time.
+    #[test]
+    fn memory_source_keeps_fetch_show_sizes_and_orderings_when_restricted() {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::record_batch::RecordBatch;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = || {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap()
+        };
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(
+            Column::new_with_schema("a", &schema).unwrap(),
+        ))])
+        .unwrap();
+        let config = MemorySourceConfig::try_new(
+            &[vec![batch()], vec![batch()], vec![batch()]],
+            schema,
+            None,
+        )
+        .unwrap()
+        .with_limit(Some(2))
+        .with_show_sizes(false)
+        .try_with_sort_information(vec![ordering])
+        .unwrap();
+        let plan: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(config);
+
+        let restricted = restrict_plan_to_partitions(plan, &[1], None).unwrap();
+
+        let exec = restricted.downcast_ref::<DataSourceExec>().unwrap();
+        let source: &dyn Any = exec.data_source().as_ref();
+        let config = source.downcast_ref::<MemorySourceConfig>().unwrap();
+        assert_eq!(config.fetch(), Some(2), "fetch is the LIMIT enforcement");
+        assert!(!config.show_sizes());
+        assert_eq!(config.sort_information().len(), 1);
+        assert_eq!(config.partitions().len(), 1);
+        assert_eq!(config.partitions()[0].len(), 1);
     }
 
     /// `plan` is an empty in-memory source with `like`'s schema and no
