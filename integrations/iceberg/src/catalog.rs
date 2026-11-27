@@ -24,14 +24,19 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{
     CatalogProvider, CatalogProviderList, SchemaProvider, Session, TableProvider,
 };
+use datafusion::common::utils::project_schema;
 use datafusion::common::{Result, not_impl_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
+use iceberg::arrow::ArrowReaderOptions;
 use iceberg::table::Table;
-use iceberg_datafusion::read::IcebergDataSource;
+use iceberg_datafusion::read::{
+    FileScanTaskProvider, FileScanTaskProviderBuilder, IcebergDataSource,
+};
 use iceberg_datafusion::{IcebergCatalogTableProvider, to_datafusion_error};
 
 /// A session's catalogs, serving each catalog-backed Iceberg table as a
@@ -148,9 +153,10 @@ impl SchemaProvider for PinningSchema {
 /// One version of an Iceberg table, read with the schema the client planned
 /// against.
 ///
-/// Not an [`IcebergStaticTableProvider`]: that derives its schema from the
-/// table, which may have evolved since planning, and is built asynchronously,
-/// which a codec's decode can't await.
+/// Not an [`IcebergStaticTableProvider`]: that takes the schema of the version
+/// it reads. A catalog-backed provider fixes its schema when it's created, or
+/// when its catalog is mounted, so a query is planned against a schema that
+/// can be older than the version pinned for it.
 ///
 /// [`IcebergStaticTableProvider`]: iceberg_datafusion::IcebergStaticTableProvider
 #[derive(Debug)]
@@ -172,18 +178,22 @@ impl TableProvider for PinnedTable {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
+        state: &dyn Session,
+        projection: Option<&[usize]>,
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let source = IcebergDataSource::builder(self.table.clone(), self.schema.clone())
-            .with_snapshot_id(self.snapshot_id)
-            .with_projection(projection)
-            .with_filters(filters)
-            .with_fetch(limit)
-            .build()?;
-        Ok(DataSourceExec::from_data_source(source))
+        let schema = project_schema(&self.schema, projection)?;
+        let tasks = FileScanTaskProviderBuilder::new(
+            state.task_ctx(),
+            self.table.clone(),
+            Arc::clone(&schema),
+        )
+        .with_snapshot_id(self.snapshot_id)
+        .with_filters(filters)
+        .build()
+        .await?;
+        scan_exec(state.config(), &self.table, schema, tasks, limit)
     }
 
     fn supports_filters_pushdown(
@@ -201,4 +211,37 @@ impl TableProvider for PinnedTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         not_impl_err!("INSERT INTO an Iceberg table isn't supported on Ballista yet")
     }
+}
+
+/// Builds the plan that reads `tasks` from `table`.
+///
+/// The reader takes its batch size and page index use from `config`, like
+/// iceberg-datafusion's default reader, but leaves the number of data files
+/// read at once to Iceberg, one per CPU. iceberg-datafusion reads one file at a
+/// time, expecting each output partition to read in parallel, but a lazy scan
+/// has one partition, so its files would be read one after another.
+pub(crate) fn scan_exec(
+    config: &SessionConfig,
+    table: &Table,
+    schema: SchemaRef,
+    tasks: Arc<dyn FileScanTaskProvider>,
+    fetch: Option<usize>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let options = ArrowReaderOptions::builder()
+        .with_batch_size(config.batch_size())
+        .with_row_selection_enabled(config.options().execution.parquet.enable_page_index)
+        .build();
+    let reader = table.reader_builder().with_options(options).build();
+    let source = IcebergDataSource::builder(
+        config,
+        schema,
+        table.file_io().clone(),
+        table.reader_builder(),
+        tasks,
+    )
+    // `builder` applies its own reader options, reading one file at a time.
+    .with_reader(reader)
+    .with_fetch(fetch)
+    .build()?;
+    Ok(DataSourceExec::from_data_source(source))
 }

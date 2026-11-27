@@ -17,22 +17,30 @@
 
 //! Sends Iceberg scans from the scheduler to executors.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{Result, not_impl_err};
+use datafusion::common::{Result, internal_datafusion_err, not_impl_err};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::physical_plan::{
     ComposedPhysicalExtensionCodec, PhysicalExtensionCodec,
     PhysicalProtoConverterExtension,
 };
+use futures::FutureExt;
 use iceberg::expr::Predicate;
-use iceberg_datafusion::read::IcebergDataSource;
+use iceberg_datafusion::IcebergDataFusionConfig;
+use iceberg_datafusion::read::{
+    EagerFileScanTaskProvider, FileScanTaskProviderBuilder, IcebergDataSource,
+    LazyFileScanTaskProvider,
+};
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::scan_exec;
 use crate::wire::{self, TableWire};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,16 +80,29 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         &self,
         buf: &[u8],
         _inputs: &[Arc<dyn ExecutionPlan>],
-        _ctx: &TaskContext,
+        ctx: &TaskContext,
         _proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let scan: ScanWire = wire::decode(buf)?;
-        let source = IcebergDataSource::builder(scan.table.load()?, scan.schema)
-            .with_snapshot_id(scan.snapshot_id)
-            .with_predicate(scan.predicate)
-            .with_fetch(scan.fetch)
-            .build()?;
-        Ok(DataSourceExec::from_data_source(source))
+        let table = scan.table.load()?;
+        // With eager file planning off, the provider discovers files when the
+        // scan runs, so building it awaits nothing.
+        let mut iceberg = IcebergDataFusionConfig::default();
+        iceberg.execution.eager_file_planning = false;
+        let config = SessionConfig::new().with_option_extension(iceberg);
+        let tasks = FileScanTaskProviderBuilder::new(
+            Arc::new(TaskContext::default().with_session_config(config)),
+            table.clone(),
+            Arc::clone(&scan.schema),
+        )
+        .with_snapshot_id(scan.snapshot_id)
+        .with_predicate(scan.predicate)
+        .build()
+        .now_or_never()
+        .ok_or_else(|| {
+            internal_datafusion_err!("building a lazy Iceberg scan waited on I/O")
+        })??;
+        scan_exec(ctx.session_config(), &table, scan.schema, tasks, scan.fetch)
     }
 
     fn try_encode(
@@ -96,9 +117,24 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         else {
             return not_impl_err!("{} isn't an Iceberg scan", node.name());
         };
+        // Executors discover the scan's files themselves, from the table.
+        let tasks = source.file_scan_task_provider() as &dyn Any;
+        let Some(tasks) = tasks.downcast_ref::<LazyFileScanTaskProvider>() else {
+            if tasks.is::<EagerFileScanTaskProvider>() {
+                return not_impl_err!(
+                    "Iceberg scans planned eagerly, with \
+                     iceberg.execution.eager_file_planning, aren't supported on Ballista yet"
+                );
+            }
+            return not_impl_err!(
+                "Iceberg scans with a custom file scan task provider aren't supported \
+                 on Ballista yet"
+            );
+        };
         // Ballista can't restrict this scan to a task's partitions, so the job
         // would fail whenever its stage is split between tasks, which depends
-        // on how busy the cluster is. Refuse it every time instead.
+        // on how busy the cluster is. Refuse it every time instead. A lazy scan
+        // has one partition today.
         let partitions = node.output_partitioning().partition_count();
         if partitions > 1 {
             return not_impl_err!(
@@ -108,10 +144,10 @@ impl PhysicalExtensionCodec for IcebergPhysicalCodec {
         wire::encode(
             buf,
             &ScanWire {
-                table: TableWire::new(source.table())?,
-                snapshot_id: source.snapshot_id(),
+                table: TableWire::new(tasks.table())?,
+                snapshot_id: tasks.snapshot_id(),
                 schema: source.schema(),
-                predicate: source.predicate().cloned(),
+                predicate: tasks.predicate().cloned(),
                 fetch: source.fetch(),
             },
         )

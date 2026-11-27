@@ -119,7 +119,7 @@ pub async fn assert_standalone_scans(catalog: Arc<dyn Catalog>) -> Result<()> {
     let ctx = SessionContext::standalone_with_state(register_iceberg(state)).await?;
     let mount = IcebergCatalogProvider::try_new(catalog.clone()).await?;
     ctx.register_catalog("iceberg", Arc::new(mount));
-    let v1 = IcebergStaticTableProvider::try_new_from_table(first).await?;
+    let v1 = IcebergStaticTableProvider::try_new_from_table(first)?;
     ctx.register_table("t_v1", Arc::new(v1))?;
 
     insert(&catalog, "(3, 'c')").await;

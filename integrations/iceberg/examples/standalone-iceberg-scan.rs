@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
         .load_table(trips.table_ident())
         .await
         .map_err(to_datafusion_error)?;
-    let v1 = IcebergStaticTableProvider::try_new_from_table(table).await?;
+    let v1 = IcebergStaticTableProvider::try_new_from_table(table)?;
     ctx.register_table("trips_v1", Arc::new(v1))?;
 
     ctx.sql("SELECT * FROM trips ORDER BY id")
