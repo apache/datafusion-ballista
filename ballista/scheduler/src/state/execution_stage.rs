@@ -242,10 +242,10 @@ pub struct RunningStage {
     /// How many operator metrics sets `plan` has, which is how many a task
     /// of this stage reports. A task that reports a different number ran a
     /// plan of a different shape and its metrics can't be merged.
-    pub plan_metrics_len: usize,
+    pub(crate) plan_metrics_len: usize,
     /// Whether a task's skipped metrics were already logged as a warning, so
     /// that only the first skipped task of the stage warns.
-    pub skipped_metrics_warned: bool,
+    pub(crate) skipped_metrics_warned: bool,
     /// [SessionConfig] used for this stage
     pub session_config: Arc<SessionConfig>,
     /// Per-task runtime-stats reports collected from every successful task
