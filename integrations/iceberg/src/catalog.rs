@@ -153,9 +153,10 @@ impl SchemaProvider for PinningSchema {
 /// One version of an Iceberg table, read with the schema the client planned
 /// against.
 ///
-/// Not an [`IcebergStaticTableProvider`]: that takes its schema from the
-/// snapshot, which can differ from the table's current schema that the client
-/// planned against.
+/// Not an [`IcebergStaticTableProvider`]: that takes the schema of the version
+/// it reads. A catalog-backed provider fixes its schema when it's created, or
+/// when its catalog is mounted, so a query is planned against a schema that
+/// can be older than the version pinned for it.
 ///
 /// [`IcebergStaticTableProvider`]: iceberg_datafusion::IcebergStaticTableProvider
 #[derive(Debug)]
