@@ -493,7 +493,9 @@ impl Stream for ColumnStatsStream {
                 *slot += column.logical_null_count() as u64;
             }
             for (column, sketch) in this.sketches.iter_mut() {
-                if let Err(e) = sketch.update(batch.column(*column), &mut this.hashes) {
+                if let Err(e) =
+                    sketch.update_for_shuffle(batch.column(*column), &mut this.hashes)
+                {
                     return Poll::Ready(Some(Err(e)));
                 }
             }
@@ -1347,7 +1349,8 @@ mod tests {
     use crate::execution_plans::test_util::{drive_partition_results, two_by_two_input};
     use crate::execution_plans::{RangeShuffleWriterExec, SortShuffleWriterExec};
     use datafusion::arrow::array::{
-        AsArray, StringArray, StringViewArray, StructArray, UInt32Array, UInt64Array,
+        AsArray, Int64Array, StringArray, StringViewArray, StructArray, UInt32Array,
+        UInt64Array,
     };
     use datafusion::arrow::ipc::reader::StreamReader;
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -1807,6 +1810,41 @@ mod tests {
         let distinct = hll.count();
         assert!((95..=105).contains(&distinct), "estimated {distinct}");
         assert!(stats[1].sketches.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn column_stats_int64_sketch_matches_public_update() -> Result<()> {
+        let precision = crate::hll::DEFAULT_PRECISION;
+        let keys = Int64Array::from_iter_values(-4096..4096);
+        let mut expected = HyperLogLog::new(precision);
+        expected.update(&keys, &mut Vec::new())?;
+        let mut union = HyperLogLogUnion::new(precision);
+        union.update(&expected);
+
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(keys)])?;
+        let source = MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None)?;
+        let input = Arc::new(RepartitionExec::try_new(
+            source,
+            Partitioning::Hash(vec![Arc::new(Column::new("key", 0))], 1),
+        )?);
+        let work_dir = TempDir::new()?;
+        let writer = Arc::new(ShuffleWriterExec::try_new(
+            JobId::new("jobInt64"),
+            1,
+            input,
+            work_dir.path().to_str().unwrap().to_owned(),
+        )?);
+        drive_all_partitions(writer.clone(), SessionContext::new().task_ctx()).await?;
+        let stats = writer.column_stats();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].null_count, 0);
+        let [sketch] = stats[0].sketches.as_slice() else {
+            panic!("expected one Int64 sketch, got {:?}", stats[0]);
+        };
+        assert_eq!(sketch.data, union.to_sketch().to_bytes());
         Ok(())
     }
 
