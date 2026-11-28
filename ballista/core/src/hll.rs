@@ -52,10 +52,40 @@
 //! tasks per stage can lower the precision with
 //! `ballista.shuffle.collect_distinct_counts_precision`.
 
-use datafusion::arrow::array::Array;
+use datafusion::arrow::array::{Array, Int64Array};
 use datafusion::common::Result;
-use datafusion::common::hash_utils::{HLL_RANDOM_STATE, create_hashes};
+use datafusion::common::hash_utils::{HLL_RANDOM_STATE, HashValue, create_hashes};
 use datasketches::hll::{HllSketch, HllType, HllUnion};
+use std::sync::LazyLock;
+
+const INT64_HASH_LANES: usize = 16;
+
+static FUSED_INT64_HASHES_MATCH: LazyLock<bool> = LazyLock::new(|| {
+    let lanes = INT64_HASH_LANES as i64;
+    let start = -lanes / 2;
+    let array = Int64Array::from_iter_values(start..=start + lanes);
+    let mut reference = [0; INT64_HASH_LANES + 1];
+    if create_hashes([&array as &dyn Array], &HLL_RANDOM_STATE, &mut reference).is_err()
+        || reference.iter().all(|&hash| hash == 0)
+    {
+        return false;
+    }
+    let mut actual = [0; INT64_HASH_LANES + 1];
+    let mut output = actual.iter_mut();
+    for_each_int64_hash(array.values(), |hash| *output.next().unwrap() = hash);
+    actual == reference
+});
+
+fn for_each_int64_hash(values: &[i64], mut visit: impl FnMut(u64)) {
+    let (chunks, tail) = values.as_chunks::<INT64_HASH_LANES>();
+    for chunk in chunks {
+        let hashes = chunk.map(|value| value.hash_one(&HLL_RANDOM_STATE));
+        hashes.into_iter().for_each(&mut visit);
+    }
+    for value in tail {
+        visit(value.hash_one(&HLL_RANDOM_STATE));
+    }
+}
 
 /// The smallest supported precision, 16 registers.
 pub const MIN_PRECISION: u8 = 4;
@@ -117,6 +147,21 @@ impl HyperLogLog {
         Ok(())
     }
 
+    pub(crate) fn update_for_shuffle(
+        &mut self,
+        array: &dyn Array,
+        hashes: &mut Vec<u64>,
+    ) -> Result<()> {
+        if let Some(ints) = array.as_any().downcast_ref::<Int64Array>()
+            && ints.null_count() == 0
+            && *FUSED_INT64_HASHES_MATCH
+        {
+            for_each_int64_hash(ints.values(), |hash| self.0.update(hash));
+            return Ok(());
+        }
+        self.update(array, hashes)
+    }
+
     /// The estimated number of distinct values added.
     pub fn count(&self) -> usize {
         self.0.estimate().round() as usize
@@ -171,7 +216,8 @@ fn assert_precision(precision: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{Int64Array, StringArray};
+    use datafusion::arrow::array::StringArray;
+    use datafusion::arrow::buffer::NullBuffer;
 
     fn sketch_at(precision: u8, values: impl IntoIterator<Item = i64>) -> HyperLogLog {
         let array = Int64Array::from_iter_values(values);
@@ -246,6 +292,72 @@ mod tests {
         let mut hll = HyperLogLog::new(DEFAULT_PRECISION);
         hll.update(&array, &mut Vec::new()).unwrap();
         assert_eq!(hll.count(), 2);
+    }
+
+    #[test]
+    fn shuffle_int64_bytes_match_public_update() -> Result<()> {
+        let single = Int64Array::from(vec![3]);
+        let mut first_stage_hash = [0];
+        create_hashes(
+            [&single as &dyn Array],
+            &HLL_RANDOM_STATE,
+            &mut first_stage_hash,
+        )?;
+        let expected_fast_path = first_stage_hash[0] != 0;
+        assert_eq!(*FUSED_INT64_HASHES_MATCH, expected_fast_path);
+        let sentinel = !first_stage_hash[0];
+        let mut scratch = vec![sentinel];
+        let mut sketch = HyperLogLog::new(DEFAULT_PRECISION);
+        sketch.update_for_shuffle(&single, &mut scratch)?;
+        assert_eq!(
+            scratch,
+            [if expected_fast_path {
+                sentinel
+            } else {
+                first_stage_hash[0]
+            }]
+        );
+
+        let dense = Int64Array::from_iter_values(-10_000..10_000);
+        let nullable = Int64Array::from_iter(
+            [None].into_iter().chain((0..17).map(Some)).chain([None]),
+        );
+        let arrays = [
+            dense.slice(0, 0),
+            Int64Array::from(vec![i64::MIN, i64::MAX, -1, -1, 0, 0]),
+            dense.slice(1, 15),
+            dense.slice(15, 16),
+            dense.slice(16, 17),
+            nullable.slice(1, 17),
+            dense.slice(33, 8192),
+            dense.slice(8225, 8192),
+        ];
+        let mut expected = HyperLogLog::new(DEFAULT_PRECISION);
+        let mut actual = expected.clone();
+        let mut expected_hashes = Vec::new();
+        let mut actual_hashes = Vec::new();
+        for array in arrays {
+            expected.update(&array, &mut expected_hashes)?;
+            actual.update_for_shuffle(&array, &mut actual_hashes)?;
+            assert_eq!(actual.to_bytes(), expected.to_bytes());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shuffle_int64_with_nulls_matches_public_update() -> Result<()> {
+        let nullable = Int64Array::new(
+            vec![123, 17, i64::MAX, 19, 321].into(),
+            Some(NullBuffer::from(vec![true, true, false, true, true])),
+        );
+        for array in [Int64Array::new_null(32), nullable.slice(1, 3)] {
+            let mut expected = HyperLogLog::new(DEFAULT_PRECISION);
+            let mut actual = expected.clone();
+            expected.update(&array, &mut Vec::new())?;
+            actual.update_for_shuffle(&array, &mut Vec::new())?;
+            assert_eq!(actual.to_bytes(), expected.to_bytes());
+        }
+        Ok(())
     }
 
     #[test]
